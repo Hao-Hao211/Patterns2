@@ -923,8 +923,17 @@ async def create_tables_if_not_exist():
 
 
 # --- FastAPI应用初始化 ---
-app = FastAPI(title="Patterns II Game Backend", lifespan=lifespan)
+app = FastAPI(title="Patterns II Game Backend", lifespan=lifespan, redirect_slashes=False)
 
+# CORS配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "https://*.vercel.app", "https://patterns2.vercel.app","https://haozhang.site"],
+    allow_credentials=True,
+    allow_methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -1443,17 +1452,6 @@ def build_user_prompt(user_prompt: Optional[str]) -> str:
 # --- 数据库连接 ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/patterns_db")
 db_pool = None
-
-# CORS配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://*.vercel.app", "https://patterns2.vercel.app","https://haozhang.site"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
-
 
 # --- API端点实现 ---
 
