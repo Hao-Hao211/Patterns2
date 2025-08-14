@@ -19,7 +19,7 @@ jiter==0.10.0
 multidict==6.6.3
 openai==1.50.0
 propcache==0.3.2
-pydantic==2.5.0
+pydantic==2.4.2
 python-dotenv==1.0.0
 python-multipart==0.0.6
 PyYAML==6.0.2
