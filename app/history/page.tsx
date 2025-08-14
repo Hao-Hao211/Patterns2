@@ -108,7 +108,7 @@ export default function HistoryPage() {
       setLoading(true)
       setError(null)
       try {
-        const backendUrl = "http://127.0.0.1:8000/api/games"
+        const backendUrl = "${process.env.NEXT_PUBLIC_API_BASE_URL}/api/games"
         const response = await fetch(backendUrl)
         if (!response.ok) {
           const errData = await response.json()

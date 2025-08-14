@@ -51,7 +51,7 @@ export default function GameDetailPage() {
         setLoading(true)
         setError(null)
         try {
-          const backendUrl = `http://127.0.0.1:8000/api/games/${gameId}`
+          const backendUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/games/${gameId}`
           const response = await fetch(backendUrl)
           if (!response.ok) {
             const errData = await response.json()

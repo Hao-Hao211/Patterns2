@@ -88,7 +88,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
       setModelsLoading(true)
       setModelsError(null)
       try {
-        const backendUrl = "http://127.0.0.1:8000/api/models"
+        const backendUrl = "${process.env.NEXT_PUBLIC_API_BASE_URL}/api/models"
         const response = await fetch(backendUrl)
         if (!response.ok) {
           throw new Error("Failed to fetch models")
@@ -251,7 +251,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
     setLlmDesignError(null)
     setDesignerConfig((prev) => ({ ...prev, llmDesignedPattern: undefined }))
 
-    const backendUrl = "http://127.0.0.1:8000/api/design-pattern"
+    const backendUrl = "${process.env.NEXT_PUBLIC_API_BASE_URL}/api/design-pattern"
 
     try {
       const response = await fetch(backendUrl, {

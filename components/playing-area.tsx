@@ -157,7 +157,7 @@ export function PlayingArea({ gameConfig, masterPattern, onGameEnd, allSymbols }
           turnNumber: player.turnNumber,
         })
 
-        const backendUrl = "http://127.0.0.1:8000/api/llm-player-turn"
+        const backendUrl = "${process.env.NEXT_PUBLIC_API_BASE_URL}/api/llm-player-turn"
         const response = await fetch(backendUrl, {
           method: "POST",
           headers: {
