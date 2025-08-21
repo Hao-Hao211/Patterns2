@@ -1467,21 +1467,47 @@ async def get_available_models():
         # 调用OpenAI API获取模型列表
         response = await asyncio.to_thread(openai_client.models.list)
 
-        # 过滤出GPT模型，排除其他类型的模型
+        # # 过滤出GPT模型，排除其他类型的模型
+        # gpt_models = []
+        # for model in response.data:
+        #     model_id = model.id.lower()
+        #     # 只包含GPT模型，排除embedding、whisper等其他模型
+        #     if any(keyword in model_id for keyword in ['gpt-4', 'gpt-3.5', 'chatgpt']):
+        #         gpt_models.append(OpenAIModel(
+        #             id=model.id,
+        #             object=model.object,
+        #             created=model.created,
+        #             owned_by=model.owned_by
+        #         ))
+
+        # Exclude models containing these keywords (e.g., embedding, whisper)
+        exclude_keywords = ["embedding", "whisper"]
+
+        # Exclude models with these exact IDs
+        exclude_exact = ["gpt-4", "gpt-3.5-turbo-0125"]
+
         gpt_models = []
         for model in response.data:
             model_id = model.id.lower()
-            # 只包含GPT模型，排除embedding、whisper等其他模型
-            if any(keyword in model_id for keyword in ['gpt-4', 'gpt-3.5', 'chatgpt']):
-                gpt_models.append(OpenAIModel(
-                    id=model.id,
-                    object=model.object,
-                    created=model.created,
-                    owned_by=model.owned_by
-                ))
+
+            # 1. Skip models containing excluded keywords
+            if any(keyword in model_id for keyword in exclude_keywords):
+                continue
+
+            # 2. Skip models with exact match in exclude list
+            if model_id in exclude_exact:
+                continue
+
+            # 3. Keep all other models
+            gpt_models.append(OpenAIModel(
+                id=model.id,
+                object=model.object,
+                created=model.created,
+                owned_by=model.owned_by
+            ))
 
         # 按模型名称排序，优先显示常用模型
-        priority_models = ['chatgpt-4o-latest', 'gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo']
+        priority_models = ['chatgpt-4o-latest', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
 
         def sort_key(model):
             if model.id in priority_models:
