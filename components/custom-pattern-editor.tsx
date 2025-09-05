@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, type FC, useEffect } from "react"
-import type { Grid, Symbol } from "@/types/game-types" // Changed import path
+import type { Grid, Symbol } from "@/types/game-types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
@@ -13,6 +13,7 @@ interface CustomPatternEditorProps {
   symbols: Symbol[]
   onSave: (pattern: Grid) => void
   onCancel: () => void
+  initialPattern?: Grid
 }
 
 const symbolColorMap: Record<Symbol, string> = {
@@ -21,31 +22,43 @@ const symbolColorMap: Record<Symbol, string> = {
   "✖": "text-red-500",
   "□": "text-purple-500",
   "★": "text-yellow-500",
-  "+": "text-orange-500", // Added '+' symbol
+  "+": "text-orange-500",
 }
 
-export const CustomPatternEditor: FC<CustomPatternEditorProps> = ({ gridSize, symbols, onSave, onCancel }) => {
-  const initialGrid = (): Grid =>
-    Array(gridSize)
+export const CustomPatternEditor: FC<CustomPatternEditorProps> = ({
+  gridSize,
+  symbols,
+  onSave,
+  onCancel,
+  initialPattern,
+}) => {
+  console.log("CustomPatternEditor received:", { gridSize, symbols, initialPattern })
+
+  const createInitialGrid = (): Grid => {
+    if (initialPattern && initialPattern.length === gridSize) {
+      console.log("Using provided initialPattern:", initialPattern)
+      return initialPattern.map((row) => [...row]) // Deep copy
+    }
+    console.log("Creating new grid with first symbol:", symbols[0])
+    return Array(gridSize)
       .fill(null)
       .map(() => Array(gridSize).fill(symbols[0]))
-  const [customGrid, setCustomGrid] = useState<Grid>(initialGrid())
+  }
+
+  const [customGrid, setCustomGrid] = useState<Grid>(createInitialGrid())
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setCustomGrid(
-      Array(gridSize)
-        .fill(null)
-        .map(() => Array(gridSize).fill(symbols[0])),
-    )
-  }, [gridSize, symbols])
+    console.log("CustomPatternEditor useEffect triggered:", { gridSize, symbols, initialPattern })
+    setCustomGrid(createInitialGrid())
+  }, [gridSize, symbols, initialPattern])
 
   const handleCellClick = (row: number, col: number) => {
     setError(null)
     setCustomGrid((prevGrid) => {
       const newGrid = prevGrid.map((r) => [...r])
       const currentSymbol = newGrid[row][col]
-      const currentIndex = symbols.indexOf(currentSymbol as Symbol) // Ensure symbols array is not empty
+      const currentIndex = symbols.indexOf(currentSymbol as Symbol)
       const nextIndex = symbols.length > 0 ? (currentIndex + 1) % symbols.length : 0
       if (symbols.length > 0) {
         newGrid[row][col] = symbols[nextIndex]
@@ -63,6 +76,7 @@ export const CustomPatternEditor: FC<CustomPatternEditorProps> = ({ gridSize, sy
         }
       }
     }
+    console.log("Saving custom pattern:", customGrid)
     onSave(customGrid)
   }
 
@@ -76,11 +90,11 @@ export const CustomPatternEditor: FC<CustomPatternEditorProps> = ({ gridSize, sy
       </CardHeader>
       <CardContent className="flex flex-col items-center space-y-6">
         <div className="p-2 bg-slate-200 rounded-lg">
-          <div
-            className={cn("grid gap-1", `grid-cols-${gridSize + 1}`)}
-            style={{ gridTemplateColumns: `auto repeat(${gridSize}, minmax(0, 1fr))` }}
-          >
-            <div />
+          <div className={cn("grid gap-1")} style={{ gridTemplateColumns: `auto repeat(${gridSize}, minmax(0, 1fr))` }}>
+            {/* Empty top-left corner */}
+            <div key="empty-corner" />
+
+            {/* Column headers */}
             {Array.from({ length: gridSize }).map((_, i) => (
               <div
                 key={`header-col-${i}`}
@@ -89,35 +103,35 @@ export const CustomPatternEditor: FC<CustomPatternEditorProps> = ({ gridSize, sy
                 {String.fromCharCode(65 + i)}
               </div>
             ))}
-            {customGrid.map((rowArray, rowIndex) => (
-              <>
+
+            {/* Grid rows */}
+            {customGrid.flatMap((rowArray, rowIndex) => [
+              // Row header
+              <div
+                key={`header-row-${rowIndex}`}
+                className="w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center font-bold text-slate-600"
+              >
+                {rowIndex + 1}
+              </div>,
+              // Row cells
+              ...rowArray.map((cell, colIndex) => (
                 <div
-                  key={`header-row-${rowIndex}`}
-                  className="w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center font-bold text-slate-600"
+                  key={`cell-${rowIndex}-${colIndex}`}
+                  onClick={() => handleCellClick(rowIndex, colIndex)}
+                  className={cn(
+                    "w-10 h-10 sm:w-12 sm:h-12 bg-white rounded-md flex items-center justify-center cursor-pointer hover:bg-slate-100 transition-all",
+                    "focus:ring-2 focus:ring-blue-500 focus:outline-none",
+                  )}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`Cell ${String.fromCharCode(65 + colIndex)}${rowIndex + 1}, current symbol ${cell}`}
                 >
-                  {rowIndex + 1}
+                  {cell && cell !== "?" && (
+                    <span className={cn("text-2xl sm:text-3xl font-bold", symbolColorMap[cell as Symbol])}>{cell}</span>
+                  )}
                 </div>
-                {rowArray.map((cell, colIndex) => (
-                  <div
-                    key={`${rowIndex}-${colIndex}`}
-                    onClick={() => handleCellClick(rowIndex, colIndex)}
-                    className={cn(
-                      "w-10 h-10 sm:w-12 sm:h-12 bg-white rounded-md flex items-center justify-center cursor-pointer hover:bg-slate-100 transition-all",
-                      "focus:ring-2 focus:ring-blue-500 focus:outline-none",
-                    )}
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`Cell ${String.fromCharCode(65 + colIndex)}${rowIndex + 1}, current symbol ${cell}`}
-                  >
-                    {cell && cell !== "?" && (
-                      <span className={cn("text-2xl sm:text-3xl font-bold", symbolColorMap[cell as Symbol])}>
-                        {cell}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </>
-            ))}
+              )),
+            ])}
           </div>
         </div>
         {error && (
@@ -127,7 +141,7 @@ export const CustomPatternEditor: FC<CustomPatternEditorProps> = ({ gridSize, sy
           </Alert>
         )}
         <div className="flex space-x-4 w-full">
-          <Button variant="outline" onClick={onCancel} className="flex-1">
+          <Button variant="outline" onClick={onCancel} className="flex-1 bg-transparent">
             Cancel & Reset Game
           </Button>
           <Button onClick={handleSavePattern} className="flex-1">

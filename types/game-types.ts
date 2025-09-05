@@ -8,7 +8,7 @@ export type Position = { row: number; col: number }
 // 新增：LLM模型参数配置
 export interface LLMModelParams {
   temperature?: number
-  maxTokens?: number
+  maxCompletionTokens?: number // 改为 maxCompletionTokens
   topP?: number
   frequencyPenalty?: number
   presencePenalty?: number
