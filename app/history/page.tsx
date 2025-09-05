@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -65,12 +66,23 @@ interface GameDetail {
 interface SearchFilters {
   modelName: string
   participantType: "all" | "designer" | "player"
+  testSetId: string
+}
+
+interface TestSet {
+  id: string
+  name: string
+  description?: string
+  status: string
+  total_games: number
+  completed_games: number
+  created_at: string
 }
 
 // 默认参数配置
 const getDefaultParams = (isDesigner = false): LLMModelParams => ({
   temperature: isDesigner ? 0.7 : 0.3, // 设计师使用更高的temperature增加创造性
-  maxTokens: 2000,
+  maxCompletionTokens: 2000, // 改为 maxCompletionTokens
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
@@ -83,7 +95,7 @@ const getMergedParams = (userParams: LLMModelParams | null, isDesigner = false):
 
   return {
     temperature: userParams.temperature ?? defaults.temperature,
-    maxTokens: userParams.maxTokens ?? defaults.maxTokens,
+    maxCompletionTokens: userParams.maxCompletionTokens ?? defaults.maxCompletionTokens, // 改为 maxCompletionTokens
     topP: userParams.topP ?? defaults.topP,
     frequencyPenalty: userParams.frequencyPenalty ?? defaults.frequencyPenalty,
     presencePenalty: userParams.presencePenalty ?? defaults.presencePenalty,
@@ -91,86 +103,114 @@ const getMergedParams = (userParams: LLMModelParams | null, isDesigner = false):
 }
 
 export default function HistoryPage() {
+  const searchParams = useSearchParams()
+  const testSetIdParam = searchParams.get("test_set_id")
+  const modelParam = searchParams.get("model")
+
   const [games, setGames] = useState<GameDetail[]>([])
   const [filteredGames, setFilteredGames] = useState<GameDetail[]>([])
+  const [testSets, setTestSets] = useState<TestSet[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedGames, setExpandedGames] = useState<Set<string>>(new Set())
 
   // 搜索相关状态
   const [searchFilters, setSearchFilters] = useState<SearchFilters>({
-    modelName: "",
+    modelName: modelParam || "",
     participantType: "all",
+    testSetId: testSetIdParam || "all",
   })
 
   useEffect(() => {
-    async function fetchGames() {
-      setLoading(true)
-      setError(null)
-      try {
-        const backendUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/games`
-        const response = await fetch(backendUrl)
-        if (!response.ok) {
-          const errData = await response.json()
-          throw new Error(errData.error || errData.detail || "Failed to fetch games")
-        }
-        const gamesList = await response.json()
-
-        // 获取每个游戏的详细信息
-        const detailedGames = await Promise.all(
-          gamesList.map(async (game: any) => {
-            try {
-              const detailResponse = await fetch(`${backendUrl}/${game.id}`)
-              if (detailResponse.ok) {
-                return await detailResponse.json()
-              }
-              return null
-            } catch (err) {
-              console.error(`Failed to fetch details for game ${game.id}:`, err)
-              return null
-            }
-          }),
-        )
-
-        const validGames = detailedGames.filter((game) => game !== null)
-        setGames(validGames)
-        setFilteredGames(validGames)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "An unknown error occurred")
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchGames()
+    fetchTestSets()
   }, [])
 
-  // 搜索过滤逻辑
   useEffect(() => {
-    if (!searchFilters.modelName.trim()) {
-      setFilteredGames(games)
-      return
-    }
+    fetchGames()
+  }, [searchFilters.testSetId])
 
-    const filtered = games.filter((game) => {
+  useEffect(() => {
+    filterGames()
+  }, [games, searchFilters])
+
+  const fetchTestSets = async () => {
+    try {
+      const response = await fetch("http://127.0.0.1:8000/api/test-sets")
+      if (!response.ok) throw new Error("Failed to fetch test sets")
+      const data = await response.json()
+      setTestSets(data)
+    } catch (err) {
+      console.error("Error fetching test sets:", err)
+    }
+  }
+
+  const fetchGames = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const backendUrl =
+        searchFilters.testSetId === "all"
+          ? "http://127.0.0.1:8000/api/games"
+          : `http://127.0.0.1:8000/api/games?test_set_id=${searchFilters.testSetId}`
+
+      const response = await fetch(backendUrl)
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData.error || errData.detail || "Failed to fetch games")
+      }
+      const gamesList = await response.json()
+
+      // 获取每个游戏的详细信息
+      const detailedGames = await Promise.all(
+        gamesList.map(async (game: any) => {
+          try {
+            const detailResponse = await fetch(`http://127.0.0.1:8000/api/games/${game.id}`)
+            if (detailResponse.ok) {
+              return await detailResponse.json()
+            }
+            return null
+          } catch (err) {
+            console.error(`Failed to fetch details for game ${game.id}:`, err)
+            return null
+          }
+        }),
+      )
+
+      const validGames = detailedGames.filter((game) => game !== null)
+      setGames(validGames)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An unknown error occurred")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const filterGames = () => {
+    let filtered = [...games]
+
+    // 按模型名称过滤
+    if (searchFilters.modelName.trim()) {
       const modelNameLower = searchFilters.modelName.toLowerCase()
 
-      // 检查设计师模型
-      const designerMatches =
-        searchFilters.participantType === "all" || searchFilters.participantType === "designer"
-          ? game.designer_llm_model?.toLowerCase().includes(modelNameLower)
-          : false
+      filtered = filtered.filter((game) => {
+        // 检查设计师模型
+        const designerMatches =
+          searchFilters.participantType === "all" || searchFilters.participantType === "designer"
+            ? game.designer_llm_model?.toLowerCase().includes(modelNameLower)
+            : false
 
-      // 检查玩家模型
-      const playerMatches =
-        searchFilters.participantType === "all" || searchFilters.participantType === "player"
-          ? game.players.some((player) => player.player_llm_model?.toLowerCase().includes(modelNameLower))
-          : false
+        // 检查玩家模型
+        const playerMatches =
+          searchFilters.participantType === "all" || searchFilters.participantType === "player"
+            ? game.players.some((player) => player.player_llm_model?.toLowerCase().includes(modelNameLower))
+            : false
 
-      return designerMatches || playerMatches
-    })
+        return designerMatches || playerMatches
+      })
+    }
 
     setFilteredGames(filtered)
-  }, [games, searchFilters])
+  }
 
   const toggleGameExpansion = (gameId: string) => {
     setExpandedGames((prev) => {
@@ -197,7 +237,14 @@ export default function HistoryPage() {
     setSearchFilters({
       modelName: "",
       participantType: "all",
+      testSetId: "all",
     })
+  }
+
+  const getSelectedTestSetName = () => {
+    if (searchFilters.testSetId === "all") return "All Games"
+    const testSet = testSets.find((ts) => ts.id === searchFilters.testSetId)
+    return testSet ? testSet.name : "Unknown Test Set"
   }
 
   // 模型参数显示组件 - 修改为总是显示可点击Badge
@@ -247,10 +294,10 @@ export default function HistoryPage() {
             </div>
 
             <div className="flex justify-between items-center">
-              <Label className="text-sm font-medium">Max Tokens:</Label>
+              <Label className="text-sm font-medium">Max Completion Tokens:</Label>
               <div className="flex items-center gap-2">
-                <Badge variant="outline">{mergedParams.maxTokens}</Badge>
-                {userParams.maxTokens === undefined && (
+                <Badge variant="outline">{mergedParams.maxCompletionTokens}</Badge>
+                {userParams.maxCompletionTokens === undefined && (
                   <Badge variant="secondary" className="text-xs">
                     default
                   </Badge>
@@ -347,7 +394,11 @@ export default function HistoryPage() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-4xl font-bold text-slate-800 mb-2">Game History</h1>
-              <p className="text-slate-600">Complete records of all past games</p>
+              <p className="text-slate-600">
+                {searchFilters.testSetId === "all"
+                  ? "Complete records of all past games"
+                  : `Games from: ${getSelectedTestSetName()}`}
+              </p>
             </div>
             <Button variant="outline" asChild>
               <Link href="/">
@@ -367,55 +418,79 @@ export default function HistoryPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col sm:flex-row gap-4 items-end">
-              <div className="flex-1 space-y-2">
-                <Label htmlFor="modelSearch">Model Name</Label>
-                <Input
-                  id="modelSearch"
-                  placeholder="e.g., gpt-4o, chatgpt-4o-latest..."
-                  value={searchFilters.modelName}
-                  onChange={(e) => setSearchFilters((prev) => ({ ...prev, modelName: e.target.value }))}
-                />
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row gap-4 items-end">
+                <div className="flex-1 space-y-2">
+                  <Label htmlFor="testSetFilter">Test Set</Label>
+                  <Select
+                    value={searchFilters.testSetId}
+                    onValueChange={(value) => setSearchFilters((prev) => ({ ...prev, testSetId: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Games</SelectItem>
+                      {testSets.map((testSet) => (
+                        <SelectItem key={testSet.id} value={testSet.id}>
+                          {testSet.name} ({testSet.completed_games}/{testSet.total_games} games)
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex-1 space-y-2">
+                  <Label htmlFor="modelSearch">Model Name</Label>
+                  <Input
+                    id="modelSearch"
+                    placeholder="e.g., gpt-4o, chatgpt-4o-latest..."
+                    value={searchFilters.modelName}
+                    onChange={(e) => setSearchFilters((prev) => ({ ...prev, modelName: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="participantType">Participant Type</Label>
+                  <Select
+                    value={searchFilters.participantType}
+                    onValueChange={(value: "all" | "designer" | "player") =>
+                      setSearchFilters((prev) => ({ ...prev, participantType: value }))
+                    }
+                  >
+                    <SelectTrigger className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="designer">Designer Only</SelectItem>
+                      <SelectItem value="player">Player Only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {(searchFilters.modelName ||
+                  searchFilters.participantType !== "all" ||
+                  searchFilters.testSetId !== "all") && (
+                  <Button variant="outline" onClick={clearSearch} size="sm">
+                    <X className="h-4 w-4 mr-1" />
+                    Clear
+                  </Button>
+                )}
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="participantType">Participant Type</Label>
-                <Select
-                  value={searchFilters.participantType}
-                  onValueChange={(value: "all" | "designer" | "player") =>
-                    setSearchFilters((prev) => ({ ...prev, participantType: value }))
-                  }
-                >
-                  <SelectTrigger className="w-40">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="designer">Designer Only</SelectItem>
-                    <SelectItem value="player">Player Only</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {(searchFilters.modelName || searchFilters.participantType !== "all") && (
-                <Button variant="outline" onClick={clearSearch} size="sm">
-                  <X className="h-4 w-4 mr-1" />
-                  Clear
-                </Button>
+              {searchFilters.modelName && (
+                <div className="text-sm text-slate-600">
+                  Found {filteredGames.length} game{filteredGames.length !== 1 ? "s" : ""} matching "
+                  {searchFilters.modelName}"
+                  {searchFilters.participantType !== "all" && ` (${searchFilters.participantType} only)`}
+                  {searchFilters.testSetId !== "all" && ` in ${getSelectedTestSetName()}`}
+                </div>
               )}
             </div>
-            {searchFilters.modelName && (
-              <div className="mt-3 text-sm text-slate-600">
-                Found {filteredGames.length} game{filteredGames.length !== 1 ? "s" : ""} matching "
-                {searchFilters.modelName}"
-                {searchFilters.participantType !== "all" && ` (${searchFilters.participantType} only)`}
-              </div>
-            )}
           </CardContent>
         </Card>
 
         {filteredGames.length === 0 ? (
           <Card>
             <CardContent className="text-center py-12">
-              {searchFilters.modelName ? (
+              {searchFilters.modelName || searchFilters.testSetId !== "all" ? (
                 <>
                   <div className="text-slate-500 text-lg mb-4">No games found matching your search</div>
                   <div className="text-slate-400 mb-6">Try adjusting your search criteria</div>
