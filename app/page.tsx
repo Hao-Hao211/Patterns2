@@ -9,7 +9,7 @@ import { DesignerDashboard, type PlayerScoreInfo } from "@/components/designer-d
 import type { Grid, Symbol } from "@/types/game-types"
 import type { Position } from "@/types/game-types"
 import { Button } from "@/components/ui/button"
-import { History } from "lucide-react"
+import { History, Trophy, Settings } from "lucide-react"
 
 const ALL_SYMBOLS: Symbol[] = ["○", "△", "✖", "□", "★", "+"]
 
@@ -222,7 +222,7 @@ export default function GamePage() {
     }
 
     try {
-      const backendUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/games`
+      const backendUrl = "http://127.0.0.1:8000/api/games"
       const response = await fetch(backendUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -262,6 +262,18 @@ export default function GamePage() {
             <Link href="/history">
               <History className="mr-2 h-4 w-4" />
               View Game History
+            </Link>
+          </Button>
+          <Button variant="link" className="text-neutral-400 hover:text-neutral-200" asChild>
+            <Link href="/test-sets">
+              <Settings className="mr-2 h-4 w-4" />
+              Setup Leaderboard Test
+            </Link>
+          </Button>
+          <Button variant="link" className="text-neutral-400 hover:text-neutral-200" asChild>
+            <Link href="/leaderboard">
+              <Trophy className="mr-2 h-4 w-4" />
+              View Leaderboard
             </Link>
           </Button>
         </div>

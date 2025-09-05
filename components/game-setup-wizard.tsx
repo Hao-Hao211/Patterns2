@@ -88,7 +88,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
       setModelsLoading(true)
       setModelsError(null)
       try {
-        const backendUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/models`
+        const backendUrl = "http://127.0.0.1:8000/api/models"
         const response = await fetch(backendUrl)
         if (!response.ok) {
           throw new Error("Failed to fetch models")
@@ -251,7 +251,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
     setLlmDesignError(null)
     setDesignerConfig((prev) => ({ ...prev, llmDesignedPattern: undefined }))
 
-    const backendUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/design-pattern`
+    const backendUrl = "http://127.0.0.1:8000/api/design-pattern"
 
     try {
       const response = await fetch(backendUrl, {
@@ -328,17 +328,17 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="maxTokens">Max Tokens (1-4096)</Label>
+              <Label htmlFor="maxCompletionTokens">Max Completion Tokens (1-4096)</Label>
               <Input
-                id="maxTokens"
+                id="maxCompletionTokens"
                 type="number"
                 min="1"
                 max="4096"
-                value={params?.maxTokens ?? ""}
+                value={params?.maxCompletionTokens ?? ""}
                 onChange={(e) =>
                   onChange({
                     ...params,
-                    maxTokens: e.target.value ? Number.parseInt(e.target.value) : undefined,
+                    maxCompletionTokens: e.target.value ? Number.parseInt(e.target.value) : undefined,
                   })
                 }
                 placeholder="2000 (default)"
@@ -405,7 +405,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
               <strong>Temperature:</strong> Controls randomness (0 = deterministic, 2 = very random)
             </p>
             <p>
-              <strong>Max Tokens:</strong> Maximum response length
+              <strong>Max Completion Tokens:</strong> Maximum response length
             </p>
             <p>
               <strong>Top P:</strong> Nucleus sampling parameter
