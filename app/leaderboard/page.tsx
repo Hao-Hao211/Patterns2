@@ -69,7 +69,7 @@ export default function LeaderboardPage() {
 
   const fetchTestSets = async () => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/test-sets")
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets`)
       if (!response.ok) throw new Error("Failed to fetch test sets")
       const data = await response.json()
       setTestSets(data)
@@ -85,8 +85,8 @@ export default function LeaderboardPage() {
 
       const url =
         selectedTestSet === "all"
-          ? "http://127.0.0.1:8000/api/leaderboard"
-          : `http://127.0.0.1:8000/api/leaderboard?test_set_id=${selectedTestSet}`
+          ? `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/leaderboard`
+          : `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/leaderboard?test_set_id=${selectedTestSet}`
 
       console.log("Fetching leaderboard from:", url)
       const response = await fetch(url)

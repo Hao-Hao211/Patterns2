@@ -59,7 +59,7 @@ export default function TestSetsPage() {
       if (!refreshing) setLoading(true)
       setError(null)
 
-      const response = await fetch("http://127.0.0.1:8000/api/test-sets")
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets`)
       if (!response.ok) {
         throw new Error(`Failed to fetch test sets: ${response.status}`)
       }
@@ -83,7 +83,7 @@ export default function TestSetsPage() {
 
   const handleStart = async (testSetId: string) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/test-sets/${testSetId}/start`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets/${testSetId}/start`, {
         method: "POST",
       })
 
@@ -102,7 +102,7 @@ export default function TestSetsPage() {
 
   const handleDelete = async (testSetId: string) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/test-sets/${testSetId}`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets/${testSetId}`, {
         method: "DELETE",
       })
 
