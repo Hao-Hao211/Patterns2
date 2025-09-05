@@ -107,7 +107,7 @@ export default function TestSetExecutePage() {
         setError(null)
       }
 
-      const response = await fetch(`http://127.0.0.1:8000/api/test-sets/${testSetId}`)
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets/${testSetId}`)
       if (!response.ok) throw new Error("Failed to fetch test set")
 
       const testSetData = await response.json()
@@ -134,7 +134,7 @@ export default function TestSetExecutePage() {
 
   const fetchCurrentGame = async () => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/test-sets/${testSetId}/current-game`)
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets/${testSetId}/current-game`)
       if (response.ok) {
         const gameData = await response.json()
         if (gameData.gameId) {
@@ -185,7 +185,7 @@ export default function TestSetExecutePage() {
 
   const handleStartTestSet = async () => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/test-sets/${testSetId}/start`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets/${testSetId}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       })

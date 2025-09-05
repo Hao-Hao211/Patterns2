@@ -135,7 +135,7 @@ export default function HistoryPage() {
 
   const fetchTestSets = async () => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/test-sets")
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets`)
       if (!response.ok) throw new Error("Failed to fetch test sets")
       const data = await response.json()
       setTestSets(data)
@@ -150,8 +150,8 @@ export default function HistoryPage() {
     try {
       const backendUrl =
         searchFilters.testSetId === "all"
-          ? "http://127.0.0.1:8000/api/games"
-          : `http://127.0.0.1:8000/api/games?test_set_id=${searchFilters.testSetId}`
+          ? `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/games`
+          : `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/games?test_set_id=${searchFilters.testSetId}`
 
       const response = await fetch(backendUrl)
       if (!response.ok) {
@@ -164,7 +164,7 @@ export default function HistoryPage() {
       const detailedGames = await Promise.all(
         gamesList.map(async (game: any) => {
           try {
-            const detailResponse = await fetch(`http://127.0.0.1:8000/api/games/${game.id}`)
+            const detailResponse = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/games/${game.id}`)
             if (detailResponse.ok) {
               return await detailResponse.json()
             }

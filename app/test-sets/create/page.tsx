@@ -122,7 +122,7 @@ export default function CreateTestSetPage() {
         setModelsLoading(true)
         setModelsError(null)
 
-        const response = await fetch("http://127.0.0.1:8000/api/models")
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/models`)
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`)
         }
@@ -379,7 +379,7 @@ export default function CreateTestSetPage() {
         }
       })
 
-      const response = await fetch("http://127.0.0.1:8000/api/test-sets", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(apiFormData),

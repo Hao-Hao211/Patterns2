@@ -714,7 +714,7 @@ async def create_tables_if_not_exist():
 
 
 # --- FastAPI应用初始化 ---
-app = FastAPI(title="Patterns II Game Backend", lifespan=lifespan)
+app = FastAPI(title="Patterns II Game Backend", lifespan=lifespan, redirect_slashes=False)
 
 
 @app.exception_handler(RequestValidationError)
@@ -977,10 +977,11 @@ db_pool = None
 # CORS配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://*.vercel.app"],
+    allow_origins=["http://localhost:3000", "https://*.vercel.app", "https://patterns2.vercel.app","https://www.haozhang.site"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
