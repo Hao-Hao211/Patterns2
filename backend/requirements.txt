@@ -4,3 +4,4 @@ pydantic
 python-dotenv
 asyncpg
 openai>=1.0.0
+together
