@@ -8,15 +8,14 @@ from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Literal, Dict, Any, Union
 import asyncpg
 from contextlib import asynccontextmanager
-import together
+import openai
 from dotenv import load_dotenv
 import threading
 from collections import defaultdict
-import openai
 
 # 导入排行榜模块
 try:
@@ -41,34 +40,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 获取API密钥
-TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# 初始化Together.ai客户端
-together_client = None
-if TOGETHER_API_KEY:
-    try:
-        together_client = together.Together(api_key=TOGETHER_API_KEY)
-        logger.info("Together.ai客户端初始化成功")
-    except Exception as e:
-        logger.error(f"Together.ai客户端初始化失败: {e}")
-        together_client = None
-else:
-    logger.warning("TOGETHER_API_KEY环境变量未设置")
-
 # 初始化OpenAI客户端
-openai_client = None
-if OPENAI_API_KEY:
-    try:
-        from openai import AsyncOpenAI
-        openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        logger.info("OpenAI客户端初始化成功")
-    except Exception as e:
-        logger.error(f"OpenAI客户端初始化失败: {e}")
-        openai_client = None
-else:
-    logger.warning("OPENAI_API_KEY环境变量未设置")
+openai_client = openai.OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 # 全局chat history存储 - 线程安全
 chat_histories_lock = threading.Lock()
@@ -416,7 +391,7 @@ class BackgroundTasksManager:
                         'gridSize': game_config['baseSettings']['gridSize'],
                         'symbolsInUse': symbols_in_use,
                         'currentGrid': player_state['grid'],
-                        'llmModel': player.get('llmModel', 'deepseek-ai/DeepSeek-V3'),
+                        'llmModel': player.get('llmModel', 'chatgpt-4o-latest'),
                         'llmModelParams': player.get('llmModelParams'),
                         'turnNumber': player_state['turnNumber']
                     }
@@ -775,23 +750,16 @@ class PositionModel(BaseModel):
     col: int
 
 
-class TogetherModel(BaseModel):
+class OpenAIModel(BaseModel):
     id: str
-    object: str = "model"
-    created: int = 0
-    owned_by: str = "together"
-    type: Optional[str] = None
-    display_name: Optional[str] = None
-    organization: Optional[str] = None
-    context_length: Optional[int] = None
-    link: Optional[str] = None
-    license: Optional[str] = None
-    pricing: Optional[Any] = None  # Changed from Dict[str, Any] to Any to handle PricingObject
+    object: str
+    created: int
+    owned_by: str
 
 
 class ModelsListResponse(BaseModel):
-    object: str = "list"
-    data: List[TogetherModel]
+    object: str
+    data: List[OpenAIModel]
 
 
 # 新增：LLM模型参数配置
@@ -814,15 +782,13 @@ class LLMPlayerTurnRequest(BaseModel):
     gridSize: int
     symbolsInUse: List[Symbol]
     currentGrid: List[List[str]]
-    llmModel: Optional[str] = "deepseek-ai/DeepSeek-V3"
+    llmModel: Optional[str] = "chatgpt-4o-latest"
     llmModelParams: Optional[LLMModelParams] = None
     turnNumber: int = 1
 
-    @field_validator('currentGrid')
-    @classmethod
-    def validate_grid(cls, v, info):
+    @validator('currentGrid')
+    def validate_grid(cls, v, values):
         """验证网格格式"""
-        values = info.data
         grid_size = values.get('gridSize')
         if grid_size is None:
             raise ValueError("gridSize must be provided before currentGrid")
@@ -863,7 +829,7 @@ class LLMPlayerTurnResponse(BaseModel):
 class DesignPatternRequest(BaseModel):
     gridSize: int = Field(..., ge=3, le=6)
     numSymbols: int = Field(..., ge=2, le=len(ALL_SYMBOLS_PY))
-    llmModel: Optional[str] = "deepseek-ai/DeepSeek-V3"
+    llmModel: Optional[str] = "chatgpt-4o-latest"
     llmModelParams: Optional[LLMModelParams] = None
     prompt: Optional[str] = None
 
@@ -1011,10 +977,9 @@ db_pool = None
 # CORS配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://*.vercel.app", "https://patterns2.vercel.app",
-                   "https://www.haozhang.site"],
+    allow_origins=["http://localhost:3000", "https://*.vercel.app", "https://patterns2.vercel.app","https://www.haozhang.site"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
@@ -1085,41 +1050,6 @@ Remember previous observations and build upon them to form hypotheses."""
 
 # --- LLM Player 核心功能 ---
 
-def is_openai_model(model_name: str) -> bool:
-    """判断是否为OpenAI模型"""
-    openai_models = [
-        'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo',
-        'o1-preview', 'o1-mini', 'gpt-4-turbo-preview', 'gpt-4-0125-preview',
-        'gpt-4-1106-preview', 'gpt-3.5-turbo-0125', 'gpt-3.5-turbo-1106',
-        'chatgpt-4o-latest','o1'
-    ]
-    return model_name in openai_models
-
-
-def build_together_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any]:
-    """构建Together.ai API调用参数"""
-    params = {}
-    if model_params:
-        if model_params.temperature is not None:
-            params["temperature"] = model_params.temperature
-        if model_params.maxCompletionTokens is not None:
-            params["max_tokens"] = model_params.maxCompletionTokens  # Together.ai uses max_tokens
-        if model_params.topP is not None:
-            params["top_p"] = model_params.topP
-        if model_params.frequencyPenalty is not None:
-            params["frequency_penalty"] = model_params.frequencyPenalty
-        if model_params.presencePenalty is not None:
-            params["presence_penalty"] = model_params.presencePenalty
-
-    # 设置默认值
-    if "temperature" not in params:
-        params["temperature"] = 0.3
-    if "max_tokens" not in params:
-        params["max_tokens"] = 2000
-
-    return params
-
-
 def build_openai_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any]:
     """构建OpenAI API调用参数"""
     params = {}
@@ -1127,7 +1057,7 @@ def build_openai_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any
         if model_params.temperature is not None:
             params["temperature"] = model_params.temperature
         if model_params.maxCompletionTokens is not None:
-            params["max_tokens"] = model_params.maxCompletionTokens
+            params["max_completion_tokens"] = model_params.maxCompletionTokens
         if model_params.topP is not None:
             params["top_p"] = model_params.topP
         if model_params.frequencyPenalty is not None:
@@ -1138,8 +1068,8 @@ def build_openai_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any
     # 设置默认值
     if "temperature" not in params:
         params["temperature"] = 0.3
-    if "max_tokens" not in params:
-        params["max_tokens"] = 2000
+    if "max_completion_tokens" not in params:
+        params["max_completion_tokens"] = 2000
 
     return params
 
@@ -1360,50 +1290,29 @@ def build_user_prompt(user_prompt: Optional[str]) -> str:
 
 async def design_pattern_logic(request: DesignPatternRequest) -> DesignPatternResponse:
     """设计模式逻辑 - 从端点中提取出来供后台任务使用"""
+    if not openai_client.api_key:
+        raise Exception("OpenAI API密钥未配置")
+
     current_symbols = ALL_SYMBOLS_PY[:request.numSymbols]
     system_prompt = build_system_prompt(request.gridSize, request.numSymbols, current_symbols)
     user_prompt = build_user_prompt(request.prompt)
 
-    # 判断使用哪个API
-    if is_openai_model(request.llmModel):
-        if not openai_client:
-            raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
+    # 构建API参数
+    api_params = build_openai_params(request.llmModelParams)
+    # 对于设计模式，使用稍高的temperature以增加创造性
+    if "temperature" not in api_params or api_params["temperature"] < 0.5:
+        api_params["temperature"] = 0.7
 
-        # 构建OpenAI API参数
-        api_params = build_openai_params(request.llmModelParams)
-        # 对于设计模式，使用稍高的temperature以增加创造性
-        if "temperature" not in api_params or api_params["temperature"] < 0.5:
-            api_params["temperature"] = 0.7
-
-        response = await openai_client.chat.completions.create(
-            model=request.llmModel or "gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"},
-            **api_params
-        )
-    else:
-        if not together_client:
-            raise Exception("Together.ai API客户端未初始化，请检查TOGETHER_API_KEY环境变量")
-
-        # 构建Together.ai API参数
-        api_params = build_together_params(request.llmModelParams)
-        # 对于设计模式，使用稍高的temperature以增加创造性
-        if "temperature" not in api_params or api_params["temperature"] < 0.5:
-            api_params["temperature"] = 0.7
-
-        response = await asyncio.to_thread(
-            together_client.chat.completions.create,
-            model=request.llmModel or "deepseek-ai/DeepSeek-V3",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"},
-            **api_params
-        )
+    response = await asyncio.to_thread(
+        openai_client.chat.completions.create,
+        model=request.llmModel or "chatgpt-4o-latest",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        response_format={"type": "json_object"},
+        **api_params
+    )
 
     content = response.choices[0].message.content
     if not content:
@@ -1423,6 +1332,10 @@ async def design_pattern_logic(request: DesignPatternRequest) -> DesignPatternRe
 
 async def llm_player_turn_logic(request: LLMPlayerTurnRequest) -> LLMPlayerTurnResponse:
     """LLM玩家回合逻辑 - 从端点中提取出来供后台任务使用"""
+    # 验证OpenAI API密钥
+    if not openai_client.api_key:
+        raise Exception("OpenAI API密钥未配置，请检查服务器环境变量")
+
     # 初始化玩家对话历史（如果是第一次）
     initialize_player_chat(
         request.gameId,
@@ -1447,36 +1360,17 @@ async def llm_player_turn_logic(request: LLMPlayerTurnRequest) -> LLMPlayerTurnR
     # 获取完整的消息历史用于API调用
     messages = get_player_messages(request.gameId, request.playerId)
 
-    # 判断使用哪个API
-    if is_openai_model(request.llmModel):
-        if not openai_client:
-            raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
+    # 构建OpenAI API参数
+    api_params = build_openai_params(request.llmModelParams)
 
-        # 构建OpenAI API参数
-        api_params = build_openai_params(request.llmModelParams)
-
-        # 调用OpenAI API
-        response = await openai_client.chat.completions.create(
-            model=request.llmModel or "gpt-4o-mini",
-            messages=messages,
-            response_format={"type": "json_object"},
-            **api_params
-        )
-    else:
-        if not together_client:
-            raise Exception("Together.ai API客户端未初始化，请检查TOGETHER_API_KEY环境变量")
-
-        # 构建Together.ai API参数
-        api_params = build_together_params(request.llmModelParams)
-
-        # 调用Together.ai API
-        response = await asyncio.to_thread(
-            together_client.chat.completions.create,
-            model=request.llmModel or "deepseek-ai/DeepSeek-V3",
-            messages=messages,
-            response_format={"type": "json_object"},
-            **api_params
-        )
+    # 调用OpenAI API
+    response = await asyncio.to_thread(
+        openai_client.chat.completions.create,
+        model=request.llmModel or "chatgpt-4o-latest",
+        messages=messages,
+        response_format={"type": "json_object"},
+        **api_params
+    )
 
     # 解析响应
     content = response.choices[0].message.content
@@ -1552,215 +1446,91 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
         return GameCreateResponse(message="Game saved successfully", game_id=game_id)
 
 
-# --- 获取模型列表的逻辑函数 ---
+# --- API端点实现 ---
 
-async def get_available_models_logic() -> ModelsListResponse:
-    """获取可用的模型列表的核心逻辑 - 合并Together.ai和OpenAI模型"""
-    logger.info("正在获取模型列表...")
+@app.get("/api/models", response_model=ModelsListResponse)
+async def get_available_models():
+    """获取可用的OpenAI模型列表"""
+    if not openai_client.api_key:
+        raise HTTPException(status_code=503, detail="OpenAI API密钥未配置")
 
-    all_models = []
+    try:
+        logger.info("从OpenAI API获取模型列表...")
 
-    # 获取Together.ai模型
-    if together_client:
-        try:
-            logger.info("正在从Together.ai API获取模型列表...")
-            models_response = await asyncio.to_thread(together_client.models.list)
-            logger.info(f"Together.ai API返回了模型数据，类型: {type(models_response)}")
+        # 调用OpenAI API获取模型列表
+        response = await asyncio.to_thread(openai_client.models.list)
 
-            # 处理不同的响应格式
-            if hasattr(models_response, 'data'):
-                models_data = models_response.data
-                logger.info(f"从data属性获取到 {len(models_data)} 个Together.ai模型")
-            elif isinstance(models_response, list):
-                models_data = models_response
-                logger.info(f"直接从列表获取到 {len(models_data)} 个Together.ai模型")
-            else:
-                models_data = list(models_response) if models_response else []
-                logger.info(f"转换后获取到 {len(models_data)} 个Together.ai模型")
+        # # 过滤出GPT模型，排除其他类型的模型
+        # gpt_models = []
+        # for model in response.data:
+        #     model_id = model.id.lower()
+        #     # 只包含GPT模型，排除embedding、whisper等其他模型
+        #     if any(keyword in model_id for keyword in ['gpt-4', 'gpt-3.5', 'chatgpt']):
+        #         gpt_models.append(OpenAIModel(
+        #             id=model.id,
+        #             object=model.object,
+        #             created=model.created,
+        #             owned_by=model.owned_by
+        #         ))
 
-            # 需要排除的特定模型列表
-            exclude_models = [
-                'meta-llama/Llama-Vision-Free',
-                'meta-llama/Llama-Guard-3-8B',
-                'microsoft/DialoGPT-medium',
-                'togethercomputer/RedPajama-INCITE-Base-3B-v1',
-                'togethercomputer/RedPajama-INCITE-Instruct-3B-v1',
-            ]
+        # Exclude models containing these keywords (e.g., embedding, whisper)
+        exclude_keywords = ["embedding", "whisper"]
 
-            # 过滤出聊天模型
-            for model in models_data:
-                try:
-                    model_id = getattr(model, 'id', str(model))
-                    model_type = getattr(model, 'type', '').lower()
+        # Exclude models with these exact IDs
+        exclude_exact = ["gpt-4", "gpt-3.5-turbo-0125"]
 
-                    # 只包含聊天模型，并排除特定模型
-                    if model_type == 'chat' and model_id not in exclude_models:
-                        # 安全地处理pricing字段
-                        pricing_data = getattr(model, 'pricing', None)
-                        if pricing_data is not None and hasattr(pricing_data, '__dict__'):
-                            try:
-                                pricing_dict = pricing_data.__dict__ if hasattr(pricing_data, '__dict__') else None
-                            except:
-                                pricing_dict = None
-                        else:
-                            pricing_dict = pricing_data
+        gpt_models = []
+        for model in response.data:
+            model_id = model.id.lower()
+            # 1. Skip models containing excluded keywords
+            if any(keyword in model_id for keyword in exclude_keywords):
+                continue
 
-                        all_models.append(TogetherModel(
-                            id=model_id,
-                            object="model",
-                            created=getattr(model, 'created', 0),
-                            owned_by=getattr(model, 'owned_by', 'together'),
-                            type=getattr(model, 'type', None),
-                            display_name=getattr(model, 'display_name', None),
-                            organization=getattr(model, 'organization', None),
-                            context_length=getattr(model, 'context_length', None),
-                            link=getattr(model, 'link', None),
-                            license=getattr(model, 'license', None),
-                            pricing=pricing_dict
-                        ))
-                except Exception as e:
-                    logger.warning(f"跳过Together.ai模型 {getattr(model, 'id', 'unknown')} 由于错误: {e}")
-                    continue
+            # 2. Skip models with exact match in exclude list
+            if model_id in exclude_exact:
+                continue
 
-        except Exception as e:
-            logger.error(f"获取Together.ai模型列表失败: {str(e)}")
+            # 3. Keep all other models
+            gpt_models.append(OpenAIModel(
+                id=model.id,
+                object=model.object,
+                created=model.created,
+                owned_by=model.owned_by
+            ))
 
-    # 添加OpenAI模型
-    if openai_client:
-        try:
-            logger.info("正在从OpenAI API获取模型列表...")
-            models_response = await openai_client.models.list()
-            logger.info(f"OpenAI API返回了模型数据")
+        # 按模型名称排序，优先显示常用模型
+        priority_models = ['chatgpt-4o-latest', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
 
-            # 需要排除的关键词和精确模型名
-            exclude_keywords = ["embedding", "whisper", "tts", "dall-e"]
-            exclude_exact = []
+        def sort_key(model):
+            if model.id in priority_models:
+                return (0, priority_models.index(model.id))
+            return (1, model.id)
 
-            for model in models_response.data:
-                try:
-                    model_id = model.id.lower()
+        gpt_models.sort(key=sort_key)
 
-                    # 1. 跳过包含排除关键词的模型
-                    if any(keyword in model_id for keyword in exclude_keywords):
-                        continue
+        logger.info(f"获取到 {len(gpt_models)} 个GPT模型")
 
-                    # 2. 跳过精确匹配的排除模型
-                    if model_id in exclude_exact:
-                        continue
+        # 返回符合OpenAI API格式的响应
+        return ModelsListResponse(
+            object="list",
+            data=gpt_models
+        )
 
-                    # 3. 保留其他所有模型
-                    all_models.append(TogetherModel(
-                        id=model.id,
-                        object="model",
-                        created=model.created,
-                        owned_by="openai",
-                        type="chat",
-                        display_name=model.id,
-                        organization="openai",
-                        context_length=None,
-                        link=None,
-                        license=None,
-                        pricing=None
-                    ))
-                except Exception as e:
-                    logger.warning(f"跳过OpenAI模型 {getattr(model, 'id', 'unknown')} 由于错误: {e}")
-                    continue
-
-            logger.info(f"成功获取OpenAI模型")
-
-        except Exception as e:
-            logger.error(f"获取OpenAI模型列表失败: {str(e)}")
-            # 如果API调用失败，添加默认OpenAI模型
-            logger.info("添加默认OpenAI模型")
-            default_openai_models = [
-                'chatgpt-4o-latest',
-                'gpt-4o',
-                'gpt-4o-mini',
-                'gpt-4-turbo',
-                'gpt-3.5-turbo',
-                'o1-preview',
-                'o1-mini'
-            ]
-
-            for model_id in default_openai_models:
-                all_models.append(TogetherModel(
-                    id=model_id,
-                    object="model",
-                    created=0,
-                    owned_by="openai",
-                    type="chat",
-                    display_name=model_id,
-                    organization="openai",
-                    context_length=None,
-                    link=None,
-                    license=None,
-                    pricing=None
-                ))
-
-    # 按模型名称排序，优先显示常用模型，默认模型为deepseek-ai/DeepSeek-V3
-    priority_models = [
-        'deepseek-ai/DeepSeek-V3',
-        'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
-        'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
-        'meta-llama/Llama-3.2-3B-Instruct-Turbo',
-        'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
-        'Qwen/Qwen2.5-7B-Instruct-Turbo',
-        'Qwen/Qwen2.5-72B-Instruct-Turbo',
-        'mistralai/Mixtral-8x7B-Instruct-v0.1',
-        'google/gemma-2-9b-it',
-        'chatgpt-4o-latest',
-        'gpt-4o',
-        'gpt-4o-mini',
-        'gpt-4',
-        'gpt-4-turbo',
-        'gpt-3.5-turbo',
-        'o1-preview',
-        'o1-mini'
-    ]
-
-    def sort_key(model):
-        if model.id in priority_models:
-            return (0, priority_models.index(model.id))
-        return (1, model.id)
-
-    all_models.sort(key=sort_key)
-
-    logger.info(f"总共获取到 {len(all_models)} 个模型")
-
-    # 如果没有获取到任何模型，返回默认模型列表
-    if not all_models:
-        logger.info("返回默认模型列表")
+    except Exception as e:
+        logger.error(f"获取模型列表失败: {e}")
+        # 如果API调用失败，返回默认模型列表
         default_models = [
-            TogetherModel(id="deepseek-ai/DeepSeek-V3", object="model", created=0, owned_by="together"),
-            TogetherModel(id="gpt-4o-mini", object="model", created=0, owned_by="openai"),
-            TogetherModel(id="gpt-4o", object="model", created=0, owned_by="openai"),
-            TogetherModel(id="chatgpt-4o-latest", object="model", created=0, owned_by="openai"),
-            TogetherModel(id="meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", object="model", created=0,
-                          owned_by="together"),
-            TogetherModel(id="meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo", object="model", created=0,
-                          owned_by="together"),
-            TogetherModel(id="Qwen/Qwen2.5-7B-Instruct-Turbo", object="model", created=0, owned_by="together"),
+            OpenAIModel(id="chatgpt-4o-latest", object="model", created=0, owned_by="openai"),
+            OpenAIModel(id="gpt-4o", object="model", created=0, owned_by="openai"),
+            OpenAIModel(id="gpt-4o-mini", object="model", created=0, owned_by="openai"),
+            OpenAIModel(id="gpt-4", object="model", created=0, owned_by="openai"),
+            OpenAIModel(id="gpt-4-turbo", object="model", created=0, owned_by="openai"),
+            OpenAIModel(id="gpt-3.5-turbo", object="model", created=0, owned_by="openai"),
         ]
         return ModelsListResponse(
             object="list",
             data=default_models
         )
-
-    # 返回合并后的模型列表
-    return ModelsListResponse(
-        object="list",
-        data=all_models
-    )
-
-
-# --- API端点实现 ---
-
-@app.get("/api/models", response_model=ModelsListResponse)
-@app.post("/api/models", response_model=ModelsListResponse)
-async def get_available_models():
-    """获取可用的模型列表 - 支持GET和POST请求"""
-    logger.info("收到获取模型列表的请求")
-    return await get_available_models_logic()
 
 
 @app.post("/api/llm-player-turn", response_model=LLMPlayerTurnResponse)
@@ -1771,18 +1541,22 @@ async def llm_player_turn_endpoint(request: LLMPlayerTurnRequest):
     try:
         return await llm_player_turn_logic(request)
 
-    except Exception as e:
-        logger.error(f"LLM API错误: {e}")
+    except openai.APIError as e:
+        logger.error(f"OpenAI API错误: {e}")
         error_message = str(e)
 
-        if "insufficient_quota" in error_message.lower() or "quota" in error_message.lower():
-            error_message = "API配额不足"
+        if "insufficient_quota" in error_message.lower():
+            error_message = "OpenAI API配额不足"
         elif "rate_limit" in error_message.lower():
             error_message = "API调用频率过高，请稍后重试"
         elif "max_tokens" in error_message.lower():
             error_message = f"参数错误: {error_message}. 请检查模型参数配置。"
 
-        raise HTTPException(status_code=502, detail=f"LLM API错误: {error_message}")
+        raise HTTPException(status_code=502, detail=f"OpenAI API错误: {error_message}")
+
+    except Exception as e:
+        logger.error(f"LLM玩家回合处理失败: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM玩家回合处理失败: {str(e)}")
 
 
 @app.post("/api/design-pattern", response_model=DesignPatternResponse)
@@ -2202,16 +1976,13 @@ async def get_current_game_state_endpoint(test_set_id: str):
 async def health_check():
     """健康检查"""
     db_status = "connected" if db_pool else "disconnected"
-    together_status = "configured" if together_client else "not configured"
-    openai_status = "configured" if openai_client else "not configured"
+    openai_status = "configured" if openai_client.api_key else "not configured"
 
     return {
         "status": "healthy",
-        "together_configured": bool(together_client),
-        "openai_configured": bool(openai_client),
+        "openai_configured": bool(openai_client.api_key),
         "database_connected": bool(db_pool),
         "database_status": db_status,
-        "together_status": together_status,
         "openai_status": openai_status
     }
 
