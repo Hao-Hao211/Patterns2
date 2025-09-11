@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from collections import defaultdict
 import asyncpg
+import trueskill
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ class ELOCalculator:
         return rating + k_factor * (actual - expected)
 
     @classmethod
-    def update_ratings_multiplayer(cls, players: List[Tuple[str, float, int]], k_factor: float = 32) -> Dict[str, float]:
+    def update_ratings_multiplayer(cls, players: List[Tuple[str, float, int]]) -> Dict[str, float]:
         """
         多人游戏ELO评分更新
         players: [(player_id, current_rating, final_score), ...]
@@ -65,6 +66,7 @@ class ELOCalculator:
         # 按分数排序，分数高的排名靠前
         sorted_players = sorted(players, key=lambda x: x[2], reverse=True)
         n = len(players)
+        k_factor = 32 / math.log(n + 1)
         new_ratings = {}
 
         for i, (player_id, rating, score) in enumerate(sorted_players):
@@ -94,128 +96,32 @@ class ELOCalculator:
         return new_ratings
 
 class TrueSkillCalculator:
-    """TrueSkill评分计算器（简化版）"""
+    """TrueSkill评分计算器"""
 
-    BETA = 4.166  # 技能差异参数
-    TAU = 0.083   # 动态因子
-    DRAW_PROBABILITY = 0.1  # 平局概率
-
-    @staticmethod
-    def gaussian_cdf(x: float) -> float:
-        """高斯累积分布函数近似"""
-        return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-
-    @staticmethod
-    def gaussian_pdf(x: float) -> float:
-        """高斯概率密度函数"""
-        return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
-
-    @classmethod
-    def v_function(cls, t: float, epsilon: float) -> float:
-        """V函数"""
-        t_epsilon = t - epsilon
-        denom = cls.gaussian_cdf(t_epsilon)
-        if denom < 1e-10:
-            return -t_epsilon
-        return cls.gaussian_pdf(t_epsilon) / denom
-
-    @classmethod
-    def w_function(cls, t: float, epsilon: float) -> float:
-        """W函数"""
-        t_epsilon = t - epsilon
-        denom = cls.gaussian_cdf(t_epsilon)
-        if denom < 1e-10:
-            return 1.0
-        v = cls.v_function(t, epsilon)
-        return v * (v + t_epsilon)
-
-    @classmethod
-    def update_rating(cls, mu: float, sigma: float, opponent_mu: float, opponent_sigma: float,
-                     outcome: float) -> Tuple[float, float]:
-        """
-        更新TrueSkill评分
-        outcome: 1.0=胜利, 0.5=平局, 0.0=失败
-        """
-        # 计算组合方差
-        c = math.sqrt(sigma**2 + opponent_sigma**2 + 2 * cls.BETA**2)
-
-        # 计算t值
-        t = (mu - opponent_mu) / c
-
-        # 根据结果计算epsilon
-        if outcome == 1.0:  # 胜利
-            epsilon = cls.DRAW_PROBABILITY / c
-            v = cls.v_function(t, epsilon)
-            w = cls.w_function(t, epsilon)
-        elif outcome == 0.0:  # 失败
-            epsilon = cls.DRAW_PROBABILITY / c
-            v = -cls.v_function(-t, epsilon)
-            w = cls.w_function(-t, epsilon)
-        else:  # 平局
-            epsilon = cls.DRAW_PROBABILITY / c
-            v = 0.0
-            w = 1.0 - cls.DRAW_PROBABILITY
-
-        # 更新mu和sigma
-        mu_multiplier = sigma**2 / c
-        new_mu = mu + mu_multiplier * v
-
-        sigma_multiplier = sigma**2 / (c**2)
-        new_sigma = sigma * math.sqrt(max(1 - sigma_multiplier * w, 0.01))
-
-        # 添加动态因子
-        new_sigma = math.sqrt(new_sigma**2 + cls.TAU**2)
-
-        return new_mu, new_sigma
+    env = trueskill.TrueSkill(draw_probability=0.1)
 
     @classmethod
     def update_ratings_multiplayer(cls, players: List[Tuple[str, float, float, int]]) -> Dict[str, Tuple[float, float]]:
         """
-        多人游戏TrueSkill评分更新
+        使用微软官方 TrueSkill 库进行多人评分更新
         players: [(player_id, mu, sigma, final_score), ...]
         返回: {player_id: (new_mu, new_sigma), ...}
         """
         if len(players) < 2:
             return {player_id: (mu, sigma) for player_id, mu, sigma, _ in players}
 
-        # 按分数排序
-        sorted_players = sorted(players, key=lambda x: x[3], reverse=True)
-        new_ratings = {}
+        scores = [score for _, _, _, score in players]
+        sorted_scores = sorted(set(scores), reverse=True)
+        score_to_rank = {score: rank for rank, score in enumerate(sorted_scores)}
+        ranks = [score_to_rank[score] for score in scores]
 
-        for i, (player_id, mu, sigma, score) in enumerate(sorted_players):
-            total_mu_change = 0.0
-            total_sigma_change = 0.0
-            comparisons = 0
+        ratings = [trueskill.Rating(mu, sigma) for _, mu, sigma, _ in players]
+        new_ratings = cls.env.rate(ratings, ranks=ranks)
 
-            # 与其他所有玩家比较
-            for j, (other_id, other_mu, other_sigma, other_score) in enumerate(sorted_players):
-                if i != j:
-                    # 确定结果
-                    if score > other_score:
-                        outcome = 1.0
-                    elif score < other_score:
-                        outcome = 0.0
-                    else:
-                        outcome = 0.5
-
-                    # 更新评分
-                    new_mu, new_sigma = cls.update_rating(mu, sigma, other_mu, other_sigma, outcome)
-                    total_mu_change += (new_mu - mu)
-                    total_sigma_change += (new_sigma - sigma)
-                    comparisons += 1
-
-            # 平均变化
-            if comparisons > 0:
-                final_mu = mu + total_mu_change / comparisons
-                final_sigma = sigma + total_sigma_change / comparisons
-            else:
-                final_mu, final_sigma = mu, sigma
-
-            # 确保sigma不会太小
-            final_sigma = max(final_sigma, 1.0)
-            new_ratings[player_id] = (final_mu, final_sigma)
-
-        return new_ratings
+        return {
+            player_id: (rating.mu, rating.sigma)
+            for (player_id, _, _, _), rating in zip(players, new_ratings)
+        }
 
 class LeaderboardCalculator:
     """排行榜计算器"""
@@ -348,7 +254,7 @@ class LeaderboardCalculator:
                         'player_type': row['player_type'],
                         'player_llm_model': row['player_llm_model'],
                         'player_llm_model_params': player_params,
-                        'final_score': row['final_score'] if row['final_score'] is not None else 0
+                        'final_score': row['final_score']
                     }
 
                     # 如果这是第一个玩家，添加游戏信息
@@ -399,6 +305,8 @@ class LeaderboardCalculator:
 
         for game in games_data:
             try:
+                designer_scores: Dict[str, int] = {}
+
                 # 处理设计师
                 if game['designer_type'] == 'LLM' and game['designer_llm_model']:
                     designer_key = self._get_player_key(game['designer_llm_model'], game['designer_llm_model_params'])
@@ -408,7 +316,6 @@ class LeaderboardCalculator:
                             model_params=game['designer_llm_model_params']
                         )
 
-                    # 计算设计师得分（玩家得分差的2倍）
                     player_scores = [p['final_score'] for p in game['players'] if p['final_score'] is not None]
                     if len(player_scores) >= 2:
                         max_score = max(player_scores)
@@ -417,22 +324,22 @@ class LeaderboardCalculator:
 
                         player_stats[designer_key].games_as_designer += 1
                         player_stats[designer_key].total_score_as_designer += designer_score
-
-                        # 设计师获胜条件：玩家得分差异大（说明模式有挑战性）
-                        if designer_score > 0:
-                            player_stats[designer_key].wins_as_designer += 1
+                        designer_scores[designer_key] = designer_score
 
                         logger.debug(f"设计师 {designer_key}: 得分差 {max_score}-{min_score}={designer_score}")
 
                 # 处理玩家
-                if len(game['players']) >= 1:
-                    # 找出最高分
+                if game['players']:
                     valid_scores = [p['final_score'] for p in game['players'] if p['final_score'] is not None]
                     if valid_scores:
                         max_score = max(valid_scores)
 
                         for player in game['players']:
-                            if player['player_type'] == 'LLM' and player['player_llm_model']:
+                            if (
+                                player['player_type'] == 'LLM'
+                                and player['player_llm_model']
+                                and player['final_score'] is not None
+                            ):
                                 player_key = self._get_player_key(player['player_llm_model'], player['player_llm_model_params'])
 
                                 if player_key not in player_stats:
@@ -442,15 +349,19 @@ class LeaderboardCalculator:
                                     )
 
                                 player_stats[player_key].games_as_player += 1
+                                player_stats[player_key].total_score_as_player += player['final_score']
 
-                                if player['final_score'] is not None:
-                                    player_stats[player_key].total_score_as_player += player['final_score']
+                                if player['final_score'] == max_score:
+                                    player_stats[player_key].wins_as_player += 1
 
-                                    # 玩家获胜条件：得分最高
-                                    if player['final_score'] == max_score:
-                                        player_stats[player_key].wins_as_player += 1
+                                logger.debug(f"玩家 {player_key}: 得分 {player['final_score']}, 最高分 {max_score}")
 
-                                    logger.debug(f"玩家 {player_key}: 得分 {player['final_score']}, 最高分 {max_score}")
+                # 设计师胜场：得分最高者胜
+                if designer_scores:
+                    max_designer_score = max(designer_scores.values())
+                    for key, score in designer_scores.items():
+                        if score == max_designer_score:
+                            player_stats[key].wins_as_designer += 1
 
             except Exception as e:
                 logger.error(f"处理游戏数据失败: {e}", exc_info=True)
@@ -461,51 +372,76 @@ class LeaderboardCalculator:
         for key, stats in player_stats.items():
             logger.info(f"  {key}: 玩家游戏{stats.games_as_player}局(胜{stats.wins_as_player}), 设计师游戏{stats.games_as_designer}局(胜{stats.wins_as_designer})")
 
+    
     async def _calculate_ratings(self, games_data: List[Dict[str, Any]], player_stats: Dict[str, PlayerStats]):
         """计算ELO和TrueSkill评分 - 修复版本"""
         logger.info("开始计算评分")
 
-        # 按时间顺序处理游戏
         games_processed = 0
         for game in games_data:
             try:
-                # 只处理有多个LLM玩家的游戏
-                llm_players = [p for p in game['players'] if p['player_type'] == 'LLM' and p['player_llm_model']]
-                if len(llm_players) < 2:
-                    continue
+                llm_players = [
+                    p
+                    for p in game["players"]
+                    if p["player_type"] == "LLM" and p["player_llm_model"] and p["final_score"] is not None
+                ]
 
-                # 准备ELO计算数据
-                elo_players = []
-                trueskill_players = []
+                elo_players: List[Tuple[str, float, int]] = []
+                trueskill_players: List[Tuple[str, float, float, int]] = []
 
                 for player in llm_players:
-                    player_key = self._get_player_key(player['player_llm_model'], player['player_llm_model_params'])
-                    if player_key in player_stats and player['final_score'] is not None:
-                        elo_players.append((player_key, player_stats[player_key].elo_rating, player['final_score']))
-                        trueskill_players.append((
-                            player_key,
-                            player_stats[player_key].trueskill_mu,
-                            player_stats[player_key].trueskill_sigma,
-                            player['final_score']
-                        ))
+                    player_key = self._get_player_key(player["player_llm_model"], player["player_llm_model_params"])
+                    if player_key in player_stats:
+                        elo_players.append((player_key, player_stats[player_key].elo_rating, player["final_score"]))
+                        trueskill_players.append(
+                            (
+                                player_key,
+                                player_stats[player_key].trueskill_mu,
+                                player_stats[player_key].trueskill_sigma,
+                                player["final_score"],
+                            )
+                        )
 
-                # 更新ELO评分
-                if len(elo_players) >= 2:
-                    new_elo_ratings = self.elo_calculator.update_ratings_multiplayer(elo_players)
-                    for player_key, new_rating in new_elo_ratings.items():
-                        old_rating = player_stats[player_key].elo_rating
-                        player_stats[player_key].elo_rating = new_rating
-                        logger.debug(f"ELO更新 {player_key}: {old_rating:.1f} -> {new_rating:.1f}")
+                if game["designer_type"] == "LLM" and game["designer_llm_model"]:
+                    designer_key = self._get_player_key(
+                        game["designer_llm_model"], game["designer_llm_model_params"]
+                    )
+                    if designer_key in player_stats:
+                        player_scores = [p["final_score"] for p in llm_players]
+                        if player_scores:
+                            max_score = max(player_scores)
+                            min_score = min(player_scores)
+                            designer_score = 2 * (max_score - min_score) if len(player_scores) >= 2 else 0
+                        else:
+                            designer_score = 0
+                        elo_players.append((designer_key, player_stats[designer_key].elo_rating, designer_score))
+                        trueskill_players.append(
+                            (
+                                designer_key,
+                                player_stats[designer_key].trueskill_mu,
+                                player_stats[designer_key].trueskill_sigma,
+                                designer_score,
+                            )
+                        )
 
-                # 更新TrueSkill评分
-                if len(trueskill_players) >= 2:
-                    new_trueskill_ratings = self.trueskill_calculator.update_ratings_multiplayer(trueskill_players)
-                    for player_key, (new_mu, new_sigma) in new_trueskill_ratings.items():
-                        old_mu = player_stats[player_key].trueskill_mu
-                        old_sigma = player_stats[player_key].trueskill_sigma
-                        player_stats[player_key].trueskill_mu = new_mu
-                        player_stats[player_key].trueskill_sigma = new_sigma
-                        logger.debug(f"TrueSkill更新 {player_key}: μ {old_mu:.2f}->{new_mu:.2f}, σ {old_sigma:.2f}->{new_sigma:.2f}")
+                if len(elo_players) < 2:
+                    continue
+
+                new_elo_ratings = self.elo_calculator.update_ratings_multiplayer(elo_players)
+                for player_key, new_rating in new_elo_ratings.items():
+                    old_rating = player_stats[player_key].elo_rating
+                    player_stats[player_key].elo_rating = new_rating
+                    logger.debug(f"ELO更新 {player_key}: {old_rating:.1f} -> {new_rating:.1f}")
+
+                new_trueskill_ratings = self.trueskill_calculator.update_ratings_multiplayer(trueskill_players)
+                for player_key, (new_mu, new_sigma) in new_trueskill_ratings.items():
+                    old_mu = player_stats[player_key].trueskill_mu
+                    old_sigma = player_stats[player_key].trueskill_sigma
+                    player_stats[player_key].trueskill_mu = new_mu
+                    player_stats[player_key].trueskill_sigma = new_sigma
+                    logger.debug(
+                        f"TrueSkill更新 {player_key}: μ {old_mu:.2f}->{new_mu:.2f}, σ {old_sigma:.2f}->{new_sigma:.2f}"
+                    )
 
                 games_processed += 1
 
@@ -514,6 +450,7 @@ class LeaderboardCalculator:
                 continue
 
         logger.info(f"评分计算完成，处理了 {games_processed} 个游戏")
+
 
     def _get_player_key(self, model_name: str, model_params: Optional[Dict[str, Any]]) -> str:
         """生成玩家唯一标识"""
