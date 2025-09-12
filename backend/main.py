@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal, Dict, Any, Union
+from typing import List, Optional, Literal, Dict, Any, Union, Set
 import asyncpg
 from contextlib import asynccontextmanager
 import together
@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# 全局OpenAI模型列表缓存
+openai_models_cache: Set[str] = set()
+openai_models_cache_lock = threading.Lock()
+
 # 初始化Together.ai客户端
 together_client = None
 if TOGETHER_API_KEY:
@@ -62,6 +66,7 @@ openai_client = None
 if OPENAI_API_KEY:
     try:
         from openai import AsyncOpenAI
+
         openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
         logger.info("OpenAI客户端初始化成功")
     except Exception as e:
@@ -616,6 +621,9 @@ async def lifespan(app: FastAPI):
         # 创建排行榜相关表
         await create_leaderboard_tables(db_pool)
 
+        # 初始化OpenAI模型缓存
+        await initialize_openai_models_cache()
+
         # 初始化后台任务管理器
         background_tasks_manager = BackgroundTasksManager(db_pool)
 
@@ -632,6 +640,74 @@ async def lifespan(app: FastAPI):
     if db_pool:
         await db_pool.close()
         logger.info("数据库连接池已关闭")
+
+
+async def initialize_openai_models_cache():
+    """初始化OpenAI模型缓存"""
+    global openai_models_cache
+
+    if not openai_client:
+        logger.info("OpenAI客户端未配置，使用默认模型列表")
+        with openai_models_cache_lock:
+            openai_models_cache.update([
+                'chatgpt-4o-latest',
+                'gpt-4o',
+                'gpt-4o-mini',
+                'gpt-4-turbo',
+                'gpt-3.5-turbo',
+                'o1-preview',
+                'o1-mini',
+                'gpt-4',
+                'gpt-4-turbo-preview',
+                'gpt-4-0125-preview',
+                'gpt-4-1106-preview',
+                'gpt-3.5-turbo-0125',
+                'gpt-3.5-turbo-1106',
+                'o1'
+            ])
+        return
+
+    try:
+        logger.info("正在从OpenAI API获取模型列表以初始化缓存...")
+        models_response = await openai_client.models.list()
+
+        # 需要排除的关键词
+        exclude_keywords = ["embedding", "whisper", "tts", "dall-e"]
+
+        openai_model_ids = set()
+        for model in models_response.data:
+            model_id = model.id.lower()
+            # 跳过包含排除关键词的模型
+            if any(keyword in model_id for keyword in exclude_keywords):
+                continue
+            openai_model_ids.add(model.id)  # 保持原始大小写
+
+        with openai_models_cache_lock:
+            openai_models_cache.clear()
+            openai_models_cache.update(openai_model_ids)
+
+        logger.info(f"成功缓存了 {len(openai_model_ids)} 个OpenAI模型")
+
+    except Exception as e:
+        logger.error(f"获取OpenAI模型列表失败，使用默认列表: {e}")
+        # 如果API调用失败，使用默认模型列表
+        with openai_models_cache_lock:
+            openai_models_cache.update([
+                'chatgpt-4o-latest',
+                'gpt-4o',
+                'gpt-4o-mini',
+                'gpt-4-turbo',
+                'gpt-3.5-turbo',
+                'o1-preview',
+                'o1-mini',
+                'gpt-4',
+                'gpt-4-turbo-preview',
+                'gpt-4-0125-preview',
+                'gpt-4-1106-preview',
+                'gpt-3.5-turbo-0125',
+                'gpt-3.5-turbo-1106',
+                'o1'
+            ])
 
 
 async def create_tables_if_not_exist():
@@ -1088,14 +1164,9 @@ Remember previous observations and build upon them to form hypotheses."""
 # --- LLM Player 核心功能 ---
 
 def is_openai_model(model_name: str) -> bool:
-    """判断是否为OpenAI模型"""
-    openai_models = [
-        'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo',
-        'o1-preview', 'o1-mini', 'gpt-4-turbo-preview', 'gpt-4-0125-preview',
-        'gpt-4-1106-preview', 'gpt-3.5-turbo-0125', 'gpt-3.5-turbo-1106',
-        'chatgpt-4o-latest','o1'
-    ]
-    return model_name in openai_models
+    """判断是否为OpenAI模型 - 基于缓存的模型列表"""
+    with openai_models_cache_lock:
+        return model_name in openai_models_cache
 
 
 def build_together_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any]:
@@ -1105,7 +1176,7 @@ def build_together_params(model_params: Optional[LLMModelParams]) -> Dict[str, A
         if model_params.temperature is not None:
             params["temperature"] = model_params.temperature
         if model_params.maxCompletionTokens is not None:
-            params["max_tokens"] = model_params.maxCompletionTokens  # Together.ai uses max_tokens
+            params["max_completion_tokens"] = model_params.maxCompletionTokens  # Together.ai uses max_completion_tokens
         if model_params.topP is not None:
             params["top_p"] = model_params.topP
         if model_params.frequencyPenalty is not None:
@@ -1116,8 +1187,8 @@ def build_together_params(model_params: Optional[LLMModelParams]) -> Dict[str, A
     # 设置默认值
     if "temperature" not in params:
         params["temperature"] = 0.3
-    if "max_tokens" not in params:
-        params["max_tokens"] = 2000
+    if "max_completion_tokens" not in params:
+        params["max_completion_tokens"] = 2000
 
     return params
 
@@ -1129,7 +1200,7 @@ def build_openai_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any
         if model_params.temperature is not None:
             params["temperature"] = model_params.temperature
         if model_params.maxCompletionTokens is not None:
-            params["max_tokens"] = model_params.maxCompletionTokens
+            params["max_completion_tokens"] = model_params.maxCompletionTokens
         if model_params.topP is not None:
             params["top_p"] = model_params.topP
         if model_params.frequencyPenalty is not None:
@@ -1140,8 +1211,8 @@ def build_openai_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any
     # 设置默认值
     if "temperature" not in params:
         params["temperature"] = 0.3
-    if "max_tokens" not in params:
-        params["max_tokens"] = 2000
+    if "max_completion_tokens" not in params:
+        params["max_completion_tokens"] = 2000
 
     return params
 
@@ -1627,77 +1698,26 @@ async def get_available_models_logic() -> ModelsListResponse:
         except Exception as e:
             logger.error(f"获取Together.ai模型列表失败: {str(e)}")
 
-    # 添加OpenAI模型
-    if openai_client:
-        try:
-            logger.info("正在从OpenAI API获取模型列表...")
-            models_response = await openai_client.models.list()
-            logger.info(f"OpenAI API返回了模型数据")
+    # 添加OpenAI模型 - 使用缓存的模型列表
+    with openai_models_cache_lock:
+        cached_openai_models = openai_models_cache.copy()
 
-            # 需要排除的关键词和精确模型名
-            exclude_keywords = ["embedding", "whisper", "tts", "dall-e"]
-            exclude_exact = []
+    for model_id in cached_openai_models:
+        all_models.append(TogetherModel(
+            id=model_id,
+            object="model",
+            created=0,
+            owned_by="openai",
+            type="chat",
+            display_name=model_id,
+            organization="openai",
+            context_length=None,
+            link=None,
+            license=None,
+            pricing=None
+        ))
 
-            for model in models_response.data:
-                try:
-                    model_id = model.id.lower()
-
-                    # 1. 跳过包含排除关键词的模型
-                    if any(keyword in model_id for keyword in exclude_keywords):
-                        continue
-
-                    # 2. 跳过精确匹配的排除模型
-                    if model_id in exclude_exact:
-                        continue
-
-                    # 3. 保留其他所有模型
-                    all_models.append(TogetherModel(
-                        id=model.id,
-                        object="model",
-                        created=model.created,
-                        owned_by="openai",
-                        type="chat",
-                        display_name=model.id,
-                        organization="openai",
-                        context_length=None,
-                        link=None,
-                        license=None,
-                        pricing=None
-                    ))
-                except Exception as e:
-                    logger.warning(f"跳过OpenAI模型 {getattr(model, 'id', 'unknown')} 由于错误: {e}")
-                    continue
-
-            logger.info(f"成功获取OpenAI模型")
-
-        except Exception as e:
-            logger.error(f"获取OpenAI模型列表失败: {str(e)}")
-            # 如果API调用失败，添加默认OpenAI模型
-            logger.info("添加默认OpenAI模型")
-            default_openai_models = [
-                'chatgpt-4o-latest',
-                'gpt-4o',
-                'gpt-4o-mini',
-                'gpt-4-turbo',
-                'gpt-3.5-turbo',
-                'o1-preview',
-                'o1-mini'
-            ]
-
-            for model_id in default_openai_models:
-                all_models.append(TogetherModel(
-                    id=model_id,
-                    object="model",
-                    created=0,
-                    owned_by="openai",
-                    type="chat",
-                    display_name=model_id,
-                    organization="openai",
-                    context_length=None,
-                    link=None,
-                    license=None,
-                    pricing=None
-                ))
+    logger.info(f"从缓存添加了 {len(cached_openai_models)} 个OpenAI模型")
 
     # 按模型名称排序，优先显示常用模型，默认模型为deepseek-ai/DeepSeek-V3
     priority_models = [
@@ -1781,7 +1801,7 @@ async def llm_player_turn_endpoint(request: LLMPlayerTurnRequest):
             error_message = "API配额不足"
         elif "rate_limit" in error_message.lower():
             error_message = "API调用频率过高，请稍后重试"
-        elif "max_tokens" in error_message.lower():
+        elif "max_completion_tokens" in error_message.lower():
             error_message = f"参数错误: {error_message}. 请检查模型参数配置。"
 
         raise HTTPException(status_code=502, detail=f"LLM API错误: {error_message}")
