@@ -995,6 +995,8 @@ class LeaderboardEntry(BaseModel):
     win_rate_as_player: float
     win_rate_as_designer: float
     total_games: int
+    overall_win_rate: float = 0.0  # 添加默认值
+    overall_wins: int = 0  # 添加默认值
 
 
 class LeaderboardResponse(BaseModel):
