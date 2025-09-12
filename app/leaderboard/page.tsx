@@ -34,6 +34,8 @@ interface LeaderboardEntry {
   win_rate_as_player: number
   win_rate_as_designer: number
   total_games: number
+  overall_win_rate: number
+  overall_wins: number
 }
 
 interface TestSet {
@@ -56,7 +58,7 @@ export default function LeaderboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<
-    "elo" | "trueskill" | "player_avg" | "designer_avg" | "player_winrate" | "designer_winrate"
+    "elo" | "trueskill" | "player_avg" | "designer_avg" | "player_winrate" | "designer_winrate" | "overall_winrate"
   >("elo")
 
   useEffect(() => {
@@ -98,6 +100,16 @@ export default function LeaderboardPage() {
 
       const data = await response.json()
       console.log("Leaderboard data:", data)
+      console.log(
+        "First entry overall data:",
+        data.entries?.[0]
+          ? {
+              overall_win_rate: data.entries[0].overall_win_rate,
+              overall_wins: data.entries[0].overall_wins,
+              total_games: data.entries[0].total_games,
+            }
+          : "No entries",
+      )
 
       setLeaderboard(data.entries || [])
     } catch (err) {
@@ -123,6 +135,8 @@ export default function LeaderboardPage() {
           return b.win_rate_as_player - a.win_rate_as_player
         case "designer_winrate":
           return b.win_rate_as_designer - a.win_rate_as_designer
+        case "overall_winrate":
+          return (b.overall_win_rate || 0) - (a.overall_win_rate || 0)
         default:
           return b.elo_rating - a.elo_rating
       }
@@ -324,6 +338,7 @@ export default function LeaderboardPage() {
                     <SelectItem value="designer_avg">Avg Designer Score</SelectItem>
                     <SelectItem value="player_winrate">Player Win Rate</SelectItem>
                     <SelectItem value="designer_winrate">Designer Win Rate</SelectItem>
+                    <SelectItem value="overall_winrate">Overall Win Rate</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -389,12 +404,22 @@ export default function LeaderboardPage() {
                         Designer Win Rate
                       </div>
                     </TableHead>
+                    <TableHead className="text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <Trophy className="h-3 w-3" />
+                        Overall Win Rate
+                      </div>
+                    </TableHead>
                     <TableHead className="text-center">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {getSortedLeaderboard().map((entry, index) => {
                     const rank = index + 1
+                    const overallWinRate = entry.overall_win_rate ?? 0
+                    const overallWins = entry.overall_wins ?? 0
+                    const totalGames = entry.total_games ?? 0
+
                     return (
                       <TableRow key={`${entry.model_name}-${JSON.stringify(entry.model_params)}`}>
                         <TableCell>
@@ -403,7 +428,7 @@ export default function LeaderboardPage() {
                         <TableCell>
                           <div className="space-y-1">
                             <ModelParamsDialog entry={entry} />
-                            <div className="text-xs text-slate-500">{entry.total_games} total games</div>
+                            <div className="text-xs text-slate-500">{totalGames} total games</div>
                           </div>
                         </TableCell>
                         <TableCell className="text-center">
@@ -450,6 +475,14 @@ export default function LeaderboardPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-center">
+                          <Badge variant={overallWinRate >= 50 ? "default" : "secondary"} className="font-mono">
+                            {overallWinRate.toFixed(1)}%
+                          </Badge>
+                          <div className="text-xs text-slate-500 mt-1">
+                            {overallWins}/{totalGames} wins
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center">
                           <Button variant="ghost" size="sm" asChild title={`View games for ${entry.model_name}`}>
                             <Link href={buildGameHistoryUrl(entry.model_name)}>
                               <History className="h-4 w-4" />
@@ -489,14 +522,25 @@ export default function LeaderboardPage() {
               <h4 className="font-semibold text-green-600 mb-2">Player Performance</h4>
               <p className="text-sm text-slate-600">
                 Statistics when acting as a player trying to solve patterns. Win rate based on achieving highest score
-                in each game. Average score shows typical performance.
+                among all players in each game. Average score shows typical performance.
               </p>
             </div>
             <div>
               <h4 className="font-semibold text-orange-600 mb-2">Designer Performance</h4>
               <p className="text-sm text-slate-600">
-                Statistics when acting as pattern designer. Score calculated as 2×(max_player_score - min_player_score).
-                Win rate based on creating challenging patterns that produce score differences.
+                Designer score is calculated as 2×(highest_player_score -
+                lowest_player_score), rewarding designs that create meaningful score differences. Designer win rate is
+                determined by comparing designer scores within each round of testing, where the designer who creates the
+                most challenging patterns (highest score spread) wins that round.
+              </p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-amber-600 mb-2">Overall Win Rate</h4>
+              <p className="text-sm text-slate-600">
+                The percentage of individual games where the model achieved the highest score, regardless of role
+                (player or designer). This metric provides the most comprehensive view of model performance by comparing
+                all participants in each game directly. A model wins a game if its score (either as player or designer)
+                is the highest among all participants in that specific game.
               </p>
             </div>
           </CardContent>
