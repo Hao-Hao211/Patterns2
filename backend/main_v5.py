@@ -273,30 +273,17 @@ class BackgroundTasksManager:
                         }
                         game_configs.append(game_config)
                 else:
-                    # Check if there's an LLM-designed pattern
-                    pattern_mode = game_template.get('pattern_mode', 'Random')
-                    designer_config = {
-                        'type': 'Human',
-                        'patternMode': pattern_mode,
-                    }
-
-                    # If LLM mode with a designed pattern, use it as custom pattern
-                    if pattern_mode == 'LLM' and game_template.get('llm_designed_pattern'):
-                        designer_config['patternMode'] = 'Custom'
-                        designer_config['customPattern'] = game_template['llm_designed_pattern']
-                    elif pattern_mode == 'Custom' and game_template.get('custom_pattern'):
-                        designer_config['customPattern'] = game_template['custom_pattern']
-                    elif pattern_mode == 'Visual':
-                        designer_config['symmetryType'] = game_template.get('symmetry_type', 'Left-Right')
-                    elif pattern_mode == 'Algorithmic':
-                        designer_config['shiftStep'] = game_template.get('shift_step', 1)
-
+                    # 使用自定义模式或随机模式
                     game_config = {
                         'baseSettings': {
                             'gridSize': game_template['grid_size'],
                             'numSymbols': game_template['num_symbols'],
                         },
-                        'designer': designer_config,
+                        'designer': {
+                            'type': 'Human',
+                            'patternMode': 'Custom' if game_template.get('custom_pattern') else 'Random',
+                            'customPattern': game_template.get('custom_pattern'),
+                        },
                         'players': [
                             {
                                 'id': f'player-{i}',
@@ -1284,13 +1271,6 @@ class TestSetGameConfig(BaseModel):
     optional_prompt: Optional[str] = None
     custom_pattern: Optional[List[List[str]]] = None
     repeat_count: int = Field(default=1, ge=1, le=10)
-    pattern_mode: Optional[str] = None  # "Visual", "Algorithmic", "Custom", "Random", "LLM"
-    symmetry_type: Optional[str] = None  # For Visual mode
-    shift_step: Optional[int] = None  # For Algorithmic mode
-    llm_pattern_model: Optional[str] = None  # LLM model for pattern generation
-    llm_pattern_model_params: Optional[LLMModelParams] = None  # LLM model parameters
-    llm_pattern_prompt: Optional[str] = None  # Custom prompt for LLM pattern generation
-    llm_designed_pattern: Optional[List[List[str]]] = None  # The actual LLM-generated pattern
 
 
 class TestSetCreateRequest(BaseModel):
@@ -1777,8 +1757,6 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
                         usage = response_json['usage']
                         input_tokens = usage.get('prompt_tokens', 0)
                         output_tokens = usage.get('completion_tokens', 0)
-                    else:
-                        logger.warning(f"OpenRouter API 响应中缺少 'usage' 字段，模型: {request.llmModel}")
 
                     # 转换为类似OpenAI的响应格式
                     class MockResponse:
@@ -1838,7 +1816,7 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
     raise Exception(f"Unexpected error in retry logic")
 
 
-async def design_pattern_logic_with_retry(request: DesignPatternRequest, max_retries: int = 10) -> DesignPatternResponse:
+async def design_pattern_logic_with_retry(request: DesignPatternRequest, max_retries: int = 5) -> DesignPatternResponse:
     """带重试机制的设计模式逻辑"""
     last_error = None
     last_response = None
@@ -2873,15 +2851,7 @@ async def create_test_set_endpoint(request: TestSetCreateRequest):
                     "num_symbols": g.num_symbols,
                     "optional_prompt": g.optional_prompt,
                     "custom_pattern": g.custom_pattern,
-                    "repeat_count": g.repeat_count,
-                    "pattern_mode": g.pattern_mode,
-                    "symmetry_type": g.symmetry_type,
-                    "shift_step": g.shift_step,
-                    "llm_pattern_model": g.llm_pattern_model,
-                    "llm_pattern_model_params": g.llm_pattern_model_params.dict(
-                        exclude_none=True) if g.llm_pattern_model_params else None,
-                    "llm_pattern_prompt": g.llm_pattern_prompt,
-                    "llm_designed_pattern": g.llm_designed_pattern,
+                    "repeat_count": g.repeat_count
                 }
                 for g in request.games
             ]
