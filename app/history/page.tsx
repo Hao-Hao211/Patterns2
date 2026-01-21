@@ -61,6 +61,8 @@ interface GameDetail {
   master_pattern: Grid
   game_config_dump: any
   players: GamePlayerDetail[]
+  in_game_designer_score: number | null
+  meta_designer_score: number | null
 }
 
 interface SearchFilters {
@@ -222,15 +224,6 @@ export default function HistoryPage() {
       }
       return newSet
     })
-  }
-
-  const calculateDesignerScore = (players: GamePlayerDetail[]) => {
-    if (players.length < 2) return 0
-    const scores = players.map((p) => p.final_score).filter((s) => s !== null && s !== undefined)
-    if (scores.length < 2) return 0
-    const maxScore = Math.max(...scores)
-    const minScore = Math.min(...scores)
-    return 2 * (maxScore - minScore)
   }
 
   const clearSearch = () => {
@@ -513,7 +506,8 @@ export default function HistoryPage() {
           <div className="space-y-6">
             {filteredGames.map((game) => {
               const isExpanded = expandedGames.has(game.id)
-              const designerScore = calculateDesignerScore(game.players)
+              const inGameDesignerScore = game.in_game_designer_score ?? 0
+              const metaDesignerScore = game.meta_designer_score ?? 0
               const symbolsInUse = ALL_SYMBOLS_DETAIL.slice(0, game.num_symbols)
 
               return (
@@ -604,8 +598,11 @@ export default function HistoryPage() {
                                 </div>
                               </div>
                               <div className="text-right">
-                                <div className="text-2xl font-bold text-blue-600">{designerScore}</div>
-                                <div className="text-xs text-slate-500">Designer Score</div>
+                                <div className="text-2xl font-bold text-blue-600">{inGameDesignerScore.toFixed(1)}</div>
+                                <div className="text-xs text-slate-600 font-medium">In-game Designer Score</div>
+                                <div className="text-xs text-purple-600 mt-1">
+                                  (Meta: {metaDesignerScore.toFixed(1)})
+                                </div>
                               </div>
                             </div>
                             <div>

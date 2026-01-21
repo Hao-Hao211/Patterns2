@@ -30,6 +30,8 @@ export interface PlayerState extends BasePlayerConfig {
   turnNumber: number
   isWaitingForLLM: boolean
   isPaused: boolean // 是否暂停自动执行
+  inputTokens?: number // 添加token跟踪
+  outputTokens?: number
 }
 
 interface PlayingAreaProps {
@@ -49,6 +51,8 @@ interface LLMPlayerTurnResponse {
   guessGrid?: Grid
   reasoning: string
   confidence?: number
+  input_tokens?: number // 添加token信息
+  output_tokens?: number
 }
 
 // 辅助函数：确保网格数据正确序列化
@@ -91,6 +95,8 @@ export function PlayingArea({ gameConfig, masterPattern, onGameEnd, allSymbols }
         turnNumber: 1,
         isWaitingForLLM: false,
         isPaused: false,
+        inputTokens: 0, // 初始化token计数
+        outputTokens: 0,
       }
     })
     return initialStates
@@ -157,7 +163,7 @@ export function PlayingArea({ gameConfig, masterPattern, onGameEnd, allSymbols }
           turnNumber: player.turnNumber,
         })
 
-        const backendUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/llm-player-turn`
+        const backendUrl = "http://127.0.0.1:8000/api/llm-player-turn"
         const response = await fetch(backendUrl, {
           method: "POST",
           headers: {
@@ -209,6 +215,9 @@ export function PlayingArea({ gameConfig, masterPattern, onGameEnd, allSymbols }
             ...currentPlayer,
             isWaitingForLLM: false,
             turnNumber: currentPlayer.turnNumber + 1,
+            // 累积token使用量
+            inputTokens: (currentPlayer.inputTokens || 0) + (llmResponse.input_tokens || 0),
+            outputTokens: (currentPlayer.outputTokens || 0) + (llmResponse.output_tokens || 0),
           }
           const newLog = [...updatedPlayer.log]
 
@@ -615,6 +624,13 @@ export function PlayingArea({ gameConfig, masterPattern, onGameEnd, allSymbols }
                             Turn {currentPlayerState.turnNumber}
                             {currentPlayerState.isWaitingForLLM && (
                               <span className="ml-2 text-orange-600 animate-pulse">Thinking...</span>
+                            )}
+                            {/* 显示token使用量 */}
+                            {(currentPlayerState.inputTokens || currentPlayerState.outputTokens) && (
+                              <span className="ml-2 text-blue-600 text-xs">
+                                Tokens: {currentPlayerState.inputTokens || 0}in/{currentPlayerState.outputTokens || 0}
+                                out
+                              </span>
                             )}
                           </span>
                           {!currentPlayerState.isFinished && (

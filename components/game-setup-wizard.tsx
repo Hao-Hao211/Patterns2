@@ -101,7 +101,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
         setModelsError("Failed to load models. Using defaults.")
         // 设置默认模型
         setAvailableModels([
-          { id: "chatgpt-4o-latest", object: "model", created: 0, owned_by: "openai" },
+          { id: "openai_official/chatgpt-4o-latest", object: "model", created: 0, owned_by: "openai" },
           { id: "gpt-4o", object: "model", created: 0, owned_by: "openai" },
           { id: "gpt-4o-mini", object: "model", created: 0, owned_by: "openai" },
           { id: "gpt-4", object: "model", created: 0, owned_by: "openai" },
@@ -126,8 +126,8 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
           newConfig.shiftStep = 1
         }
       } else if (prevConfig.type === "LLM" && !prevConfig.llmModel) {
-        // 设置默认模型为chatgpt-4o-latest
-        newConfig.llmModel = "chatgpt-4o-latest"
+        // 设置默认模型为openai_official/chatgpt-4o-latest
+        newConfig.llmModel = "openai_official/chatgpt-4o-latest"
       }
       return newConfig
     })
@@ -153,13 +153,13 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
           finalDesignerConfig.shiftStep = 1
         }
       } else if (finalDesignerConfig.type === "LLM" && !finalDesignerConfig.llmModel) {
-        finalDesignerConfig.llmModel = "chatgpt-4o-latest"
+        finalDesignerConfig.llmModel = "openai_official/chatgpt-4o-latest"
       }
 
       // 确保所有LLM玩家都有默认模型
       const finalPlayers = players.map((player) => ({
         ...player,
-        llmModel: player.type === "LLM" && !player.llmModel ? "chatgpt-4o-latest" : player.llmModel,
+        llmModel: player.type === "LLM" && !player.llmModel ? "openai_official/chatgpt-4o-latest" : player.llmModel,
       }))
 
       onSetupComplete({ baseSettings, designer: finalDesignerConfig, players: finalPlayers })
@@ -198,7 +198,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
             updatedPlayer.llmModel = undefined
             updatedPlayer.llmModelParams = undefined
           } else if (value === "LLM" && !updatedPlayer.llmModel) {
-            updatedPlayer.llmModel = "chatgpt-4o-latest"
+            updatedPlayer.llmModel = "openai_official/chatgpt-4o-latest"
           }
         }
         return updatedPlayer
@@ -215,7 +215,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
       symmetryType: undefined,
       shiftStep: undefined,
       customPattern: undefined,
-      llmModel: newType === "LLM" ? "chatgpt-4o-latest" : undefined,
+      llmModel: newType === "LLM" ? "openai_official/chatgpt-4o-latest" : undefined,
       llmModelParams: newType === "LLM" ? prev.llmModelParams : undefined,
       llmPrompt: newType === "LLM" ? prev.llmPrompt : undefined,
       llmDesignedPattern: undefined,
@@ -341,7 +341,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
                     maxCompletionTokens: e.target.value ? Number.parseInt(e.target.value) : undefined,
                   })
                 }
-                placeholder="2000 (default)"
+                placeholder="4096 (default)"
               />
             </div>
             <div className="space-y-2">
@@ -442,7 +442,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
               <span className="text-sm text-slate-600">Loading models...</span>
             </div>
           ) : (
-            <Select value={value || "chatgpt-4o-latest"} onValueChange={onChange}>
+            <Select value={value || "openai_official/chatgpt-4o-latest"} onValueChange={onChange}>
               <SelectTrigger>
                 <SelectValue placeholder="Select LLM Model" />
               </SelectTrigger>
@@ -450,7 +450,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
                 {availableModels.map((model) => (
                   <SelectItem key={model.id} value={model.id}>
                     {model.id}
-                    {model.id === "chatgpt-4o-latest" && (
+                    {model.id === "openai_official/chatgpt-4o-latest" && (
                       <span className="ml-2 text-xs text-green-600">(Recommended)</span>
                     )}
                   </SelectItem>
