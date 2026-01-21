@@ -29,11 +29,14 @@ export function DesignerDashboard({ designerType, playerScores, onPlayAgain }: D
       if (p.score > bestScore) bestScore = p.score
       if (p.score < worstScore) worstScore = p.score
     })
-    // Handle case where all scores are the same or only one player
-    if (bestScore === Number.NEGATIVE_INFINITY || worstScore === Number.POSITIVE_INFINITY || playerScores.length < 2) {
-      designerScore = 0 // Or some other default for single player / all same scores
+
+    // Use new formula with clipping: 2 * (clip(max_score, 0) - clip(min_score, 0))
+    if (bestScore === Number.NEGATIVE_INFINITY || worstScore === Number.POSITIVE_INFINITY || playerScores.length < 1) {
+      designerScore = 0
     } else {
-      designerScore = 2 * (bestScore - worstScore)
+      const clippedBest = Math.max(bestScore, 0)
+      const clippedWorst = Math.max(worstScore, 0)
+      designerScore = 2 * (clippedBest - clippedWorst)
     }
   }
 
@@ -79,7 +82,7 @@ export function DesignerDashboard({ designerType, playerScores, onPlayAgain }: D
             </div>
             <p className="text-5xl font-bold text-center text-sky-400">{designerScore}</p>
             <div className="text-xs text-slate-400 text-center mt-2 flex items-center justify-center">
-              <p>Calculated as 2 * (Best Player Score - Worst Player Score)</p>
+              <p>Calculated as 2 * (clip(Best Score, 0) - clip(Worst Score, 0))</p>
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -88,11 +91,13 @@ export function DesignerDashboard({ designerType, playerScores, onPlayAgain }: D
                   <TooltipContent className="bg-black text-white p-2 rounded-md text-xs">
                     <p>Best Score: {bestScore === Number.NEGATIVE_INFINITY ? "N/A" : bestScore}</p>
                     <p>Worst Score: {worstScore === Number.POSITIVE_INFINITY ? "N/A" : worstScore}</p>
+                    <p>Clipped Best: {bestScore === Number.NEGATIVE_INFINITY ? "N/A" : Math.max(bestScore, 0)}</p>
+                    <p>Clipped Worst: {worstScore === Number.POSITIVE_INFINITY ? "N/A" : Math.max(worstScore, 0)}</p>
                     <p>
-                      Formula: 2 * ({bestScore === Number.NEGATIVE_INFINITY ? "N/A" : bestScore} -{" "}
-                      {worstScore === Number.POSITIVE_INFINITY ? "N/A" : worstScore}) = {designerScore}
+                      Formula: 2 * (clip({bestScore === Number.NEGATIVE_INFINITY ? "N/A" : bestScore}, 0) - clip(
+                      {worstScore === Number.POSITIVE_INFINITY ? "N/A" : worstScore}, 0)) = {designerScore}
                     </p>
-                    <p className="mt-1 text-slate-500">Based on Sid Sackson's original scoring rules.</p>
+                    <p className="mt-1 text-slate-500">Negative scores are clipped to 0 before calculation.</p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -103,7 +108,7 @@ export function DesignerDashboard({ designerType, playerScores, onPlayAgain }: D
           <Button size="lg" className="w-full sm:flex-1" onClick={onPlayAgain}>
             Play Again
           </Button>
-          <Button size="lg" variant="outline" className="w-full sm:flex-1" asChild>
+          <Button size="lg" variant="outline" className="w-full sm:flex-1 bg-transparent" asChild>
             <Link href="/history">View Game History</Link>
           </Button>
         </CardFooter>

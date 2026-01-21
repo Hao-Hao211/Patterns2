@@ -53,9 +53,13 @@ interface TestSetGameConfig {
   optional_prompt?: string
   custom_pattern?: Grid
   repeat_count: number
-  pattern_mode?: "Visual" | "Algorithmic" | "Custom" | "Random"
+  pattern_mode?: "Visual" | "Algorithmic" | "Custom" | "Random" | "LLM" // Added "LLM" option
   symmetry_type?: "Left-Right" | "Top-Bottom" | "Both"
   shift_step?: number
+  llm_pattern_model?: string
+  llm_pattern_model_params?: LLMModelParams
+  llm_pattern_prompt?: string
+  llm_designed_pattern?: Grid
 }
 
 interface TestSetCreateRequest {
@@ -80,7 +84,7 @@ interface ModelsListResponse {
 
 type SetupStep = "basic" | "settings" | "participants" | "games" | "customPatternEditor"
 
-const allSymbols: Symbol[] = ["○", "△", "✖", "□", "★", "+"]
+const allSymbols: Symbol[] = ["+", "○", "△", "□", "★", "✖"]
 
 export default function CreateTestSetPage() {
   const router = useRouter()
@@ -91,6 +95,9 @@ export default function CreateTestSetPage() {
   const [availableModels, setAvailableModels] = useState<OpenAIModel[]>([])
   const [modelsLoading, setModelsLoading] = useState(true)
   const [modelsError, setModelsError] = useState<string | null>(null)
+
+  const [isLLMDesigning, setIsLLMDesigning] = useState<Record<number, boolean>>({})
+  const [llmDesignErrors, setLlmDesignErrors] = useState<Record<number, string | null>>({})
 
   // Form data
   const [formData, setFormData] = useState<TestSetCreateRequest>({
@@ -273,6 +280,12 @@ export default function CreateTestSetPage() {
             if (g.pattern_mode === "Custom") {
               updatedGame.custom_pattern = undefined
             }
+            if (g.pattern_mode === "LLM") {
+              updatedGame.llm_pattern_model = undefined
+              updatedGame.llm_pattern_model_params = undefined
+              updatedGame.llm_pattern_prompt = undefined
+              updatedGame.llm_designed_pattern = undefined
+            }
           } else if (value === "Algorithmic") {
             updatedGame.shift_step = g.shift_step || 1
             updatedGame.symmetry_type = undefined
@@ -280,22 +293,104 @@ export default function CreateTestSetPage() {
             if (g.pattern_mode === "Custom") {
               updatedGame.custom_pattern = undefined
             }
+            if (g.pattern_mode === "LLM") {
+              updatedGame.llm_pattern_model = undefined
+              updatedGame.llm_pattern_model_params = undefined
+              updatedGame.llm_pattern_prompt = undefined
+              updatedGame.llm_designed_pattern = undefined
+            }
           } else if (value === "Custom") {
             // When switching to Custom mode, keep existing custom_pattern if available
             updatedGame.symmetry_type = undefined
             updatedGame.shift_step = undefined
-            // Don't clear custom_pattern - keep existing one
+            if (g.pattern_mode === "LLM") {
+              updatedGame.llm_pattern_model = undefined
+              updatedGame.llm_pattern_model_params = undefined
+              updatedGame.llm_pattern_prompt = undefined
+              updatedGame.llm_designed_pattern = undefined
+            }
+          } else if (value === "LLM") {
+            updatedGame.symmetry_type = undefined
+            updatedGame.shift_step = undefined
+            updatedGame.custom_pattern = undefined
+            updatedGame.llm_pattern_model = availableModels.length > 0 ? availableModels[0].id : "chatgpt-4o-latest"
+            updatedGame.llm_pattern_model_params = undefined
+            updatedGame.llm_pattern_prompt = undefined
+            updatedGame.llm_designed_pattern = undefined
           } else {
             // For Random mode or others
             updatedGame.symmetry_type = undefined
             updatedGame.shift_step = undefined
             updatedGame.custom_pattern = undefined
+            updatedGame.llm_pattern_model = undefined
+            updatedGame.llm_pattern_model_params = undefined
+            updatedGame.llm_pattern_prompt = undefined
+            updatedGame.llm_designed_pattern = undefined
           }
         }
 
         return updatedGame
       }),
     }))
+  }
+
+  const updateGameLLMParam = (gameIndex: number, param: keyof LLMModelParams, value: number | undefined) => {
+    setFormData((prev) => ({
+      ...prev,
+      games: prev.games.map((g, i) => {
+        if (i === gameIndex) {
+          const newParams = { ...g.llm_pattern_model_params }
+          if (value === undefined || value === null) {
+            delete newParams[param]
+          } else {
+            newParams[param] = value
+          }
+          return { ...g, llm_pattern_model_params: Object.keys(newParams).length > 0 ? newParams : undefined }
+        }
+        return g
+      }),
+    }))
+  }
+
+  const handleRequestLLMPattern = async (gameIndex: number) => {
+    const game = formData.games[gameIndex]
+    setIsLLMDesigning((prev) => ({ ...prev, [gameIndex]: true }))
+    setLlmDesignErrors((prev) => ({ ...prev, [gameIndex]: null }))
+
+    const backendUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/design-pattern`
+
+    try {
+      const response = await fetch(backendUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gridSize: game.grid_size,
+          numSymbols: game.num_symbols,
+          llmModel: game.llm_pattern_model,
+          llmModelParams: game.llm_pattern_model_params,
+          prompt: game.llm_pattern_prompt,
+        }),
+      })
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(
+          errorData.error || errorData.detail || `LLM pattern design API request failed with status ${response.status}`,
+        )
+      }
+      const data = await response.json()
+      updateGame(gameIndex, "llm_designed_pattern", data.pattern as Grid)
+    } catch (error) {
+      console.error("Error designing pattern with LLM:", error)
+      let detailedErrorMessage = "An unexpected error occurred."
+      if (error instanceof TypeError && error.message.toLowerCase().includes("failed to fetch")) {
+        detailedErrorMessage = `Network error: Could not connect to the backend server at ${backendUrl}. Please ensure it's running.`
+      } else if (error instanceof Error) {
+        detailedErrorMessage = error.message
+      }
+      setLlmDesignErrors((prev) => ({ ...prev, [gameIndex]: detailedErrorMessage }))
+    } finally {
+      setIsLLMDesigning((prev) => ({ ...prev, [gameIndex]: false }))
+    }
   }
 
   const handleCustomPatternSave = (pattern: Grid) => {
@@ -340,7 +435,8 @@ export default function CreateTestSetPage() {
               g.num_symbols <= 6 &&
               g.repeat_count >= 1 &&
               (formData.llm_rotate_designer || g.pattern_mode) &&
-              (g.pattern_mode !== "Custom" || g.custom_pattern),
+              (g.pattern_mode !== "Custom" || g.custom_pattern) &&
+              (g.pattern_mode !== "LLM" || g.llm_designed_pattern),
           )
         )
       default:
@@ -365,6 +461,9 @@ export default function CreateTestSetPage() {
           ...game,
           custom_pattern: game.custom_pattern
             ? game.custom_pattern.map((row) => row.map((cell) => cell as string))
+            : undefined,
+          llm_designed_pattern: game.llm_designed_pattern
+            ? game.llm_designed_pattern.map((row) => row.map((cell) => cell as string))
             : undefined,
         })),
       }
@@ -744,6 +843,7 @@ export default function CreateTestSetPage() {
                               <SelectItem value="Visual">Visual (Symmetry)</SelectItem>
                               <SelectItem value="Algorithmic">Algorithmic (Shift)</SelectItem>
                               <SelectItem value="Custom">Custom (Define Manually)</SelectItem>
+                              <SelectItem value="LLM">LLM (AI Generated)</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -810,6 +910,173 @@ export default function CreateTestSetPage() {
                                     isGuessing={false}
                                     finalGuess={null}
                                     masterPattern={game.custom_pattern}
+                                    isGameOver={true}
+                                    readOnly={true}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {game.pattern_mode === "LLM" && (
+                          <div className="space-y-4 pl-4 border-l-2">
+                            <div className="space-y-2">
+                              <Label>LLM Model</Label>
+                              {modelsLoading ? (
+                                <div className="flex items-center space-x-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  <span className="text-sm text-muted-foreground">Loading models...</span>
+                                </div>
+                              ) : (
+                                <Select
+                                  value={game.llm_pattern_model || "chatgpt-4o-latest"}
+                                  onValueChange={(value) => updateGame(index, "llm_pattern_model", value)}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {availableModels.map((model) => (
+                                      <SelectItem key={model.id} value={model.id}>
+                                        {model.id}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              )}
+                            </div>
+
+                            <Collapsible>
+                              <CollapsibleTrigger asChild>
+                                <Button variant="ghost" size="sm" className="w-full justify-between">
+                                  Advanced Model Parameters
+                                  <ChevronDown className="h-4 w-4" />
+                                </Button>
+                              </CollapsibleTrigger>
+                              <CollapsibleContent className="space-y-4 pt-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-2">
+                                    <Label>Temperature</Label>
+                                    <Input
+                                      type="number"
+                                      step="0.1"
+                                      min="0"
+                                      max="2"
+                                      value={game.llm_pattern_model_params?.temperature ?? ""}
+                                      onChange={(e) =>
+                                        updateGameLLMParam(
+                                          index,
+                                          "temperature",
+                                          e.target.value ? Number.parseFloat(e.target.value) : undefined,
+                                        )
+                                      }
+                                      placeholder="0.7"
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label>Max Tokens</Label>
+                                    <Input
+                                      type="number"
+                                      min="1"
+                                      max="4096"
+                                      value={game.llm_pattern_model_params?.maxCompletionTokens ?? ""}
+                                      onChange={(e) =>
+                                        updateGameLLMParam(
+                                          index,
+                                          "maxCompletionTokens",
+                                          e.target.value ? Number.parseInt(e.target.value) : undefined,
+                                        )
+                                      }
+                                      placeholder="2000"
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label>Top P</Label>
+                                    <Input
+                                      type="number"
+                                      step="0.1"
+                                      min="0"
+                                      max="1"
+                                      value={game.llm_pattern_model_params?.topP ?? ""}
+                                      onChange={(e) =>
+                                        updateGameLLMParam(
+                                          index,
+                                          "topP",
+                                          e.target.value ? Number.parseFloat(e.target.value) : undefined,
+                                        )
+                                      }
+                                      placeholder="1.0"
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label>Frequency Penalty</Label>
+                                    <Input
+                                      type="number"
+                                      step="0.1"
+                                      min="-2"
+                                      max="2"
+                                      value={game.llm_pattern_model_params?.frequencyPenalty ?? ""}
+                                      onChange={(e) =>
+                                        updateGameLLMParam(
+                                          index,
+                                          "frequencyPenalty",
+                                          e.target.value ? Number.parseFloat(e.target.value) : undefined,
+                                        )
+                                      }
+                                      placeholder="0.0"
+                                    />
+                                  </div>
+                                </div>
+                              </CollapsibleContent>
+                            </Collapsible>
+
+                            <div className="space-y-2">
+                              <Label>Custom Prompt (Optional)</Label>
+                              <Textarea
+                                value={game.llm_pattern_prompt || ""}
+                                onChange={(e) => updateGame(index, "llm_pattern_prompt", e.target.value || undefined)}
+                                placeholder="e.g., 'Create a complex symmetrical pattern' or 'Design a spiral pattern'"
+                                rows={2}
+                              />
+                            </div>
+
+                            <Button
+                              onClick={() => handleRequestLLMPattern(index)}
+                              disabled={isLLMDesigning[index] || !game.llm_pattern_model}
+                              className="w-full"
+                            >
+                              {isLLMDesigning[index] ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  Generating Pattern...
+                                </>
+                              ) : (
+                                "Generate Pattern with LLM"
+                              )}
+                            </Button>
+
+                            {llmDesignErrors[index] && (
+                              <Alert variant="destructive">
+                                <AlertTriangle className="h-4 w-4" />
+                                <AlertDescription>{llmDesignErrors[index]}</AlertDescription>
+                              </Alert>
+                            )}
+
+                            {game.llm_designed_pattern && !llmDesignErrors[index] && (
+                              <div className="space-y-2">
+                                <Label className="text-sm text-muted-foreground">Generated Pattern Preview:</Label>
+                                <div className="mt-1">
+                                  <GameBoard
+                                    grid={game.llm_designed_pattern}
+                                    gridSize={game.grid_size}
+                                    symbolsInUse={allSymbols.slice(0, game.num_symbols)}
+                                    onCellClick={() => {}}
+                                    selectedCells={[]}
+                                    queriedCells={[]}
+                                    isGuessing={false}
+                                    finalGuess={null}
+                                    masterPattern={game.llm_designed_pattern}
                                     isGameOver={true}
                                     readOnly={true}
                                   />

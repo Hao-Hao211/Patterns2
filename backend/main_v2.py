@@ -9,15 +9,14 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal, Dict, Any, Union, Set, Tuple
+from typing import List, Optional, Literal, Dict, Any, Union, Set
 import asyncpg
 from contextlib import asynccontextmanager
-import httpx
+import together
 from dotenv import load_dotenv
 import threading
 from collections import defaultdict
 import openai
-import numpy as np
 
 # 导入排行榜模块
 try:
@@ -31,8 +30,9 @@ except ImportError:
         async def calculate_leaderboard(self, test_set_id=None):
             return []
 
-        async def get_cached_leaderboard(self, test_set_id=None):
-            return None
+
+    async def create_leaderboard_tables(db_pool):
+        pass
 
 # 加载环境变量
 load_dotenv()
@@ -42,31 +42,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 获取API密钥
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # 全局OpenAI模型列表缓存
 openai_models_cache: Set[str] = set()
 openai_models_cache_lock = threading.Lock()
 
-# 初始化OpenRouter客户端
-openrouter_client = None
-if OPENROUTER_API_KEY:
+# 初始化Together.ai客户端
+together_client = None
+if TOGETHER_API_KEY:
     try:
-        openrouter_client = httpx.AsyncClient(
-            base_url="https://openrouter.ai/api/v1",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            timeout=60.0
-        )
-        logger.info("OpenRouter客户端初始化成功")
+        together_client = together.Together(api_key=TOGETHER_API_KEY)
+        logger.info("Together.ai客户端初始化成功")
     except Exception as e:
-        logger.error(f"OpenRouter客户端初始化失败: {e}")
-        openrouter_client = None
+        logger.error(f"Together.ai客户端初始化失败: {e}")
+        together_client = None
 else:
-    logger.warning("OPENROUTER_API_KEY环境变量未设置")
+    logger.warning("TOGETHER_API_KEY环境变量未设置")
 
 # 初始化OpenAI客户端
 openai_client = None
@@ -92,10 +85,6 @@ background_tasks_manager = None
 # 全局游戏状态存储 - 用于实时观看
 game_states_lock = threading.Lock()
 current_game_states: Dict[str, Dict[str, Any]] = {}
-
-# 全局token使用跟踪 - 用于跟踪每个玩家的token使用情况
-player_token_usage_lock = threading.Lock()
-player_token_usage: Dict[str, Dict[str, int]] = defaultdict(lambda: {"input_tokens": 0, "output_tokens": 0})
 
 
 class BackgroundTasksManager:
@@ -273,30 +262,17 @@ class BackgroundTasksManager:
                         }
                         game_configs.append(game_config)
                 else:
-                    # Check if there's an LLM-designed pattern
-                    pattern_mode = game_template.get('pattern_mode', 'Random')
-                    designer_config = {
-                        'type': 'Human',
-                        'patternMode': pattern_mode,
-                    }
-
-                    # If LLM mode with a designed pattern, use it as custom pattern
-                    if pattern_mode == 'LLM' and game_template.get('llm_designed_pattern'):
-                        designer_config['patternMode'] = 'Custom'
-                        designer_config['customPattern'] = game_template['llm_designed_pattern']
-                    elif pattern_mode == 'Custom' and game_template.get('custom_pattern'):
-                        designer_config['customPattern'] = game_template['custom_pattern']
-                    elif pattern_mode == 'Visual':
-                        designer_config['symmetryType'] = game_template.get('symmetry_type', 'Left-Right')
-                    elif pattern_mode == 'Algorithmic':
-                        designer_config['shiftStep'] = game_template.get('shift_step', 1)
-
+                    # 使用自定义模式或随机模式
                     game_config = {
                         'baseSettings': {
                             'gridSize': game_template['grid_size'],
                             'numSymbols': game_template['num_symbols'],
                         },
-                        'designer': designer_config,
+                        'designer': {
+                            'type': 'Human',
+                            'patternMode': 'Custom' if game_template.get('custom_pattern') else 'Random',
+                            'customPattern': game_template.get('custom_pattern'),
+                        },
                         'players': [
                             {
                                 'id': f'player-{i}',
@@ -346,9 +322,9 @@ class BackgroundTasksManager:
                     'prompt': game_config['designer'].get('llmPrompt')
                 }
 
-                # 直接调用design pattern端点的逻辑（带重试机制）
+                # 直接调用design pattern端点的逻辑
                 design_request = DesignPatternRequest(**request_data)
-                design_response = await design_pattern_logic_with_retry(design_request)
+                design_response = await design_pattern_logic(design_request)
                 logger.info(f"LLM设计师生成模式成功")
                 return design_response.pattern
 
@@ -407,9 +383,7 @@ class BackgroundTasksManager:
                 'finalGuess': None,
                 'turnNumber': 1,
                 'isWaitingForLLM': False,
-                'isPaused': False,
-                'inputTokens': 0,  # 添加token跟踪
-                'outputTokens': 0
+                'isPaused': False
             }
 
         # 存储到全局状态
@@ -447,21 +421,16 @@ class BackgroundTasksManager:
                         'gridSize': game_config['baseSettings']['gridSize'],
                         'symbolsInUse': symbols_in_use,
                         'currentGrid': player_state['grid'],
-                        'llmModel': player.get('llmModel', 'openai_official/chatgpt-4o-latest'),
+                        'llmModel': player.get('llmModel', 'deepseek-ai/DeepSeek-V3'),
                         'llmModelParams': player.get('llmModelParams'),
                         'turnNumber': player_state['turnNumber']
                     }
 
                     llm_request = LLMPlayerTurnRequest(**llm_request_data)
-                    llm_response, actual_input_tokens, actual_output_tokens = await llm_player_turn_logic_with_retry(
-                        llm_request)
+                    llm_response = await llm_player_turn_logic_with_retry(llm_request)
 
                     player_state['isWaitingForLLM'] = False
                     player_state['turnNumber'] += 1
-
-                    # 使用实际的token使用量
-                    player_state['inputTokens'] += actual_input_tokens
-                    player_state['outputTokens'] += actual_output_tokens
 
                     # 处理LLM响应
                     if llm_response.action == 'observe':
@@ -590,9 +559,7 @@ class BackgroundTasksManager:
                     final_score=player_score['score'],
                     final_guess=player_state.get('finalGuess'),
                     action_log=player_state.get('log'),
-                    queried_cells=queried_cells,
-                    input_tokens=player_state.get('inputTokens', 0),
-                    output_tokens=player_state.get('outputTokens', 0)
+                    queried_cells=queried_cells
                 )
                 players_data.append(player_data)
 
@@ -617,68 +584,6 @@ class BackgroundTasksManager:
             logger.error(f"保存游戏结果失败: {e}")
 
 
-# --- Helper Functions ---
-
-def analyze_action_log(action_log: Optional[List[str]]) -> tuple[int, int, int]:
-    """
-    分析action_log，提取观察次数、观察轮数和是否退出
-
-    Returns:
-        tuple: (observation_count, observation_rounds, did_quit)
-    """
-    if not action_log:
-        return 0, 0, 0
-
-    observation_count = 0
-    observation_rounds = 0
-    did_quit = 0
-
-    for log_entry in action_log:
-        # 检查是否包含观察行为
-        if "Observed cells:" in log_entry:
-            observation_rounds += 1
-            # 提取观察的单元格数量
-            # 格式: "Turn X: Observed cells: A1, B2, C3. ..."
-            try:
-                cells_part = log_entry.split("Observed cells:")[1].split(".")[0]
-                cells = [c.strip() for c in cells_part.split(",") if c.strip()]
-                observation_count += len(cells)
-            except:
-                pass
-
-        # 检查是否退出游戏
-        if "Gave up the game" in log_entry or "give_up" in log_entry.lower():
-            did_quit = 1
-
-    return observation_count, observation_rounds, did_quit
-
-
-def calculate_ranks(scores: List[tuple[str, int]]) -> dict[str, int]:
-    """
-    根据分数计算排名（分数高的排名靠前，相同分数排名相同）
-
-    Args:
-        scores: List of (participant_id, score) tuples
-
-    Returns:
-        dict: {participant_id: rank}
-    """
-    # 按分数降序排序
-    sorted_scores = sorted(scores, key=lambda x: x[1], reverse=True)
-
-    ranks = {}
-    current_rank = 1
-    prev_score = None
-
-    for i, (participant_id, score) in enumerate(sorted_scores):
-        if prev_score is not None and score < prev_score:
-            current_rank = i + 1
-        ranks[participant_id] = current_rank
-        prev_score = score
-
-    return ranks
-
-
 def calculate_score(master_pattern: List[List[str]], guess: List[List[str]],
                     queried_cells: List[Dict[str, int]], grid_size: int) -> int:
     """计算玩家分数"""
@@ -698,113 +603,6 @@ def calculate_score(master_pattern: List[List[str]], guess: List[List[str]],
                         score -= 1
 
     return score
-
-
-def designer_percentile(scores: List[float], grid_size: Tuple[int, int],
-                        a: float = 7.0, b: float = 3.0, m0: float = 0.40,
-                        s0: float = 0.30, sigma_ref: float = 4.0) -> float:
-    """
-    Calculate designer percentile based on player scores
-
-    Args:
-        scores: List of player scores
-        grid_size: (height, width) of the grid
-        a, b: Difficulty and discrimination weights
-        m0, s0: Target mean and std thresholds
-        sigma_ref: Reference sigma for competitiveness compression
-
-    Returns:
-        p_prime: Designer percentile (0 to 1)
-    """
-    H, W = grid_size
-    Smax = H * W
-    scores_array = np.asarray(scores, dtype=float)
-    mu, sigma = scores_array.mean(), scores_array.std()
-
-    # Normalize mean and std
-    m = mu / Smax
-    s = min(sigma, Smax / 2) / (Smax / 2)
-
-    # Step A: Difficulty & Discrimination
-    z = a * (m0 - m) + b * (s - s0)
-    p = 1.0 / (1.0 + np.exp(-z))
-
-    # Step B: Competitiveness Compression
-    kappa = min(1.0, sigma / sigma_ref)
-    p_prime = 0.5 + kappa * (p - 0.5)
-
-    return float(p_prime)
-
-
-def designer_in_game_score(scores: List[float], p_prime: float,
-                           bump_top: bool = False, eps: float = 1e-6) -> float:
-    """
-    Calculate in-game designer score that can be ranked with player scores
-
-    Args:
-        scores: List of player scores
-        p_prime: Designer percentile
-        bump_top: If True, add epsilon when at top percentile
-        eps: Small value to add when bumping top
-
-    Returns:
-        Designer score that can be compared with player scores
-    """
-    scores_array = np.sort(np.asarray(scores, dtype=float))
-    n = len(scores_array)
-    pis = (np.arange(1, n + 1) - 0.5) / n
-    val = float(np.interp(p_prime, pis, scores_array))
-
-    if bump_top and p_prime >= pis[-1]:
-        val = scores_array[-1] + eps
-
-    return val
-
-
-def designer_meta_score(p_prime: float, grid_size: Tuple[int, int]) -> float:
-    """
-    Calculate meta designer score for cross-game comparison
-
-    Args:
-        p_prime: Designer percentile
-        grid_size: (height, width) of the grid
-
-    Returns:
-        Meta score in range [0, Smax]
-    """
-    H, W = grid_size
-    return (H * W) * p_prime
-
-
-def calculate_designer_scores(player_scores: List[float], grid_size: int,
-                              num_symbols: int) -> Tuple[float, float]:
-    """
-    Calculate both in-game and meta designer scores using the new algorithm
-
-    Args:
-        player_scores: List of player scores
-        grid_size: Grid size (assuming square grid)
-        num_symbols: Number of symbols (not used in calculation but kept for compatibility)
-
-    Returns:
-        (in_game_designer_score, meta_designer_score)
-    """
-    if not player_scores or len(player_scores) < 1:
-        return 0.0, 0.0
-
-    # Assume square grid for now (can be extended to rectangular)
-    grid_tuple = (grid_size, grid_size)
-
-    # Calculate percentile
-    p_prime = designer_percentile(player_scores, grid_tuple)
-
-    # Calculate in-game score (for ranking)
-    in_game_score = designer_in_game_score(player_scores, p_prime, bump_top=True)
-
-    # Calculate meta score (for cross-game comparison)
-    meta_score = designer_meta_score(p_prime, grid_tuple)
-
-    return in_game_score, meta_score
 
 
 # --- 全局异常处理器 ---
@@ -841,16 +639,11 @@ async def lifespan(app: FastAPI):
     # 关闭时清理连接池
     if db_pool:
         await db_pool.close()
-        logger.info("数据库连接池已关闭")
-
-    # 关闭OpenRouter客户端
-    if openrouter_client:
-        await openrouter_client.aclose()
-        logger.info("OpenRouter客户端已关闭")
+        logger.info("数据库连接池��关闭")
 
 
 async def initialize_openai_models_cache():
-    """初始化OpenAI官方模型缓存"""
+    """初始化OpenAI模型缓存"""
     global openai_models_cache
 
     if not openai_client:
@@ -875,7 +668,7 @@ async def initialize_openai_models_cache():
         return
 
     try:
-        logger.info("正在从OpenAI官方API获取模型列表以初始化缓存...")
+        logger.info("正在从OpenAI API获取模型列表以初始化缓存...")
         models_response = await openai_client.models.list()
 
         # 需要排除的关键词
@@ -887,16 +680,16 @@ async def initialize_openai_models_cache():
             # 跳过包含排除关键词的模型
             if any(keyword in model_id for keyword in exclude_keywords):
                 continue
-            openai_model_ids.add(model.id)  # 保持原始大小写，不添加前缀
+            openai_model_ids.add(model.id)  # 保持原始大小写
 
         with openai_models_cache_lock:
             openai_models_cache.clear()
             openai_models_cache.update(openai_model_ids)
 
-        logger.info(f"成功缓存了 {len(openai_model_ids)} 个OpenAI官方模型")
+        logger.info(f"成功缓存了 {len(openai_model_ids)} 个OpenAI模型")
 
     except Exception as e:
-        logger.error(f"获取OpenAI官方模型列表失败，使用默认列表: {e}")
+        logger.error(f"获取OpenAI模型列表失败，使用默认列表: {e}")
         # 如果API调用失败，使用默认模型列表
         with openai_models_cache_lock:
             openai_models_cache.update([
@@ -918,22 +711,21 @@ async def initialize_openai_models_cache():
 
 
 async def create_tables_if_not_exist():
-    """创建数据库表（如果不存在）"""
+    """自动创建数据库表（如果不存在）"""
     if not db_pool:
-        logger.warning("数据库连接池未初始化，跳过表创建")
         return
 
     try:
         async with db_pool.acquire() as conn:
-            # Check if games table exists
+            # 检查表是否存在
             result = await conn.fetchval(
                 "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'games')"
             )
 
             if not result:
-                logger.info("创建数据库表...")
+                logger.info("数据库表不存在，正在创建...")
 
-                # Create games table
+                # 创建 games 表
                 await conn.execute("""
                                    CREATE TABLE games
                                    (
@@ -951,7 +743,7 @@ async def create_tables_if_not_exist():
                                    )
                                    """)
 
-                # Create game_players table
+                # 创建 game_players 表
                 await conn.execute("""
                                    CREATE TABLE game_players
                                    (
@@ -964,101 +756,59 @@ async def create_tables_if_not_exist():
                                        final_score             INTEGER,
                                        final_guess             JSONB,
                                        action_log              JSONB,
-                                       queried_cells           JSONB,
-                                       input_tokens            INTEGER          DEFAULT 0,
-                                       output_tokens           INTEGER          DEFAULT 0
+                                       queried_cells           JSONB
                                    )
                                    """)
 
-                logger.info("基础表创建成功")
-
-            # Check if game_analytics table exists
-            analytics_exists = await conn.fetchval(
-                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'game_analytics')"
-            )
-
-            if not analytics_exists:
-                logger.info("创建 game_analytics 表...")
+                # 创建 test_sets 表 - 修改默认状态为 'created'
                 await conn.execute("""
-                                   CREATE TABLE game_analytics
+                                   CREATE TABLE IF NOT EXISTS test_sets
                                    (
-                                       id                           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                       game_id                      UUID    NOT NULL REFERENCES games (id) ON DELETE CASCADE,
-                                       grid_size                    INTEGER NOT NULL,
-                                       num_symbols                  INTEGER NOT NULL,
-                                       test_set_id                  TEXT,
-
-                                       participant_role             TEXT    NOT NULL CHECK (participant_role IN ('designer', 'player')),
-                                       participant_id               TEXT    NOT NULL,
-                                       participant_name             TEXT    NOT NULL,
-                                       participant_type             TEXT    NOT NULL,
-                                       participant_llm_model        TEXT,
-                                       participant_llm_model_params JSONB,
-
-                                       final_score                  INTEGER NOT NULL,
-                                       in_game_designer_score       DECIMAL(10, 2)   DEFAULT 0.0,
-                                       meta_designer_score          DECIMAL(10, 2)   DEFAULT 0.0,
-                                       rank_in_game                 INTEGER NOT NULL,
-                                       rank_in_game_incl_designer   INTEGER NOT NULL,
-
-                                       observation_count            INTEGER          DEFAULT 0,
-                                       observation_rounds           INTEGER          DEFAULT 0,
-                                       did_quit                     INTEGER          DEFAULT 0 CHECK (did_quit IN (0, 1)),
-
-                                       final_guess                  JSONB,
-                                       action_log                   JSONB,
-                                       queried_cells                JSONB,
-                                       master_pattern               JSONB   NOT NULL,
-
-                                       input_tokens                 INTEGER          DEFAULT 0,
-                                       output_tokens                INTEGER          DEFAULT 0,
-
-                                       created_at                   TIMESTAMPTZ      DEFAULT NOW()
+                                       id
+                                       TEXT
+                                       PRIMARY
+                                       KEY,
+                                       name
+                                       TEXT
+                                       NOT
+                                       NULL,
+                                       description
+                                       TEXT,
+                                       config
+                                       JSONB
+                                       NOT
+                                       NULL,
+                                       status
+                                       TEXT
+                                       DEFAULT
+                                       'created',
+                                       total_games
+                                       INTEGER
+                                       DEFAULT
+                                       0,
+                                       completed_games
+                                       INTEGER
+                                       DEFAULT
+                                       0,
+                                       created_at
+                                       TIMESTAMPTZ
+                                       DEFAULT
+                                       NOW
+                                   (
                                    )
+                                       )
                                    """)
 
-                # Create indexes
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_analytics_game_id ON game_analytics(game_id)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_participant_id ON game_analytics(participant_id)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_role ON game_analytics(participant_role)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_model ON game_analytics(participant_llm_model)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_test_set ON game_analytics(test_set_id)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_created_at ON game_analytics(created_at DESC)")
+                # 创建索引
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_players_game_id ON game_players(game_id)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_created_at ON games(created_at DESC)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_test_set_id ON games(test_set_id)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_created_at ON test_sets(created_at DESC)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_status ON test_sets(status)")
 
-                logger.info("game_analytics 表创建成功")
+                logger.info("数据库表创建成功！")
             else:
-                # Check if in_game_designer_score column exists
-                column_exists = await conn.fetchval("""
-                                                    SELECT EXISTS (SELECT
-                                                                   FROM information_schema.columns
-                                                                   WHERE table_name = 'game_analytics'
-                                                                     AND column_name = 'in_game_designer_score')
-                                                    """)
-
-                if not column_exists:
-                    logger.info("添加 in_game_designer_score 和 meta_designer_score 列到 game_analytics 表...")
-                    await conn.execute("""
-                                       ALTER TABLE game_analytics
-                                           ADD COLUMN in_game_designer_score DECIMAL(10, 2) DEFAULT 0.0,
-                                           ADD COLUMN meta_designer_score    DECIMAL(10, 2) DEFAULT 0.0
-                                       """)
-                    logger.info("新设计师分数列添加成功")
-
-            # Ensure indexes exist (idempotent)
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_players_game_id ON game_players(game_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_created_at ON games(created_at DESC)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_test_set_id ON games(test_set_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_created_at ON test_sets(created_at DESC)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_status ON test_sets(status)")
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_game_players_tokens ON game_players(input_tokens, output_tokens)")
-
-            logger.info("数据库表已存在或已更新")
+                logger.info("数据库表已存在")
 
     except Exception as e:
         logger.error(f"创建数据库表失败: {e}")
@@ -1101,24 +851,23 @@ class PositionModel(BaseModel):
     col: int
 
 
-class OpenRouterModel(BaseModel):
+class TogetherModel(BaseModel):
     id: str
-    name: str
+    object: str = "model"
     created: int = 0
-    description: Optional[str] = None
-    architecture: Optional[Dict[str, Any]] = None
-    top_provider: Optional[Dict[str, Any]] = None
-    pricing: Optional[Dict[str, Any]] = None
-    canonical_slug: Optional[str] = None
+    owned_by: str = "together"
+    type: Optional[str] = None
+    display_name: Optional[str] = None
+    organization: Optional[str] = None
     context_length: Optional[int] = None
-    hugging_face_id: Optional[str] = None
-    per_request_limits: Optional[Dict[str, Any]] = None
-    supported_parameters: Optional[List[str]] = None
+    link: Optional[str] = None
+    license: Optional[str] = None
+    pricing: Optional[Any] = None  # Changed from Dict[str, Any] to Any to handle PricingObject
 
 
 class ModelsListResponse(BaseModel):
     object: str = "list"
-    data: List[OpenRouterModel]
+    data: List[TogetherModel]
 
 
 # 新增：LLM模型参数配置
@@ -1141,7 +890,7 @@ class LLMPlayerTurnRequest(BaseModel):
     gridSize: int
     symbolsInUse: List[Symbol]
     currentGrid: List[List[str]]
-    llmModel: Optional[str] = "openai_official/chatgpt-4o-latest"
+    llmModel: Optional[str] = "deepseek-ai/DeepSeek-V3"
     llmModelParams: Optional[LLMModelParams] = None
     turnNumber: int = 1
 
@@ -1184,16 +933,13 @@ class LLMPlayerTurnResponse(BaseModel):
     guessGrid: Optional[Grid] = None
     reasoning: str = ""
     confidence: Optional[float] = None
-    # 添加token使用量信息
-    input_tokens: Optional[int] = 0
-    output_tokens: Optional[int] = 0
 
 
 # API请求/响应模型
 class DesignPatternRequest(BaseModel):
     gridSize: int = Field(..., ge=3, le=6)
     numSymbols: int = Field(..., ge=2, le=len(ALL_SYMBOLS_PY))
-    llmModel: Optional[str] = "openai_official/chatgpt-4o-latest"
+    llmModel: Optional[str] = "deepseek-ai/DeepSeek-V3"
     llmModelParams: Optional[LLMModelParams] = None
     prompt: Optional[str] = None
 
@@ -1212,8 +958,6 @@ class PlayerStateInGame(BaseModel):
     final_guess: Optional[List[List[str]]] = None
     action_log: Optional[List[str]] = None
     queried_cells: Optional[List[PositionModel]] = None
-    input_tokens: Optional[int] = 0
-    output_tokens: Optional[int] = 0
 
 
 class GameCreateRequest(BaseModel):
@@ -1266,8 +1010,6 @@ class GameDetailResponse(BaseModel):
     master_pattern: List[List[str]]
     game_config_dump: Dict[str, Any]
     players: List[GamePlayerDetailResponse]
-    in_game_designer_score: Optional[float] = None
-    meta_designer_score: Optional[float] = None
 
 
 # 新增：测试集相关模型
@@ -1284,13 +1026,6 @@ class TestSetGameConfig(BaseModel):
     optional_prompt: Optional[str] = None
     custom_pattern: Optional[List[List[str]]] = None
     repeat_count: int = Field(default=1, ge=1, le=10)
-    pattern_mode: Optional[str] = None  # "Visual", "Algorithmic", "Custom", "Random", "LLM"
-    symmetry_type: Optional[str] = None  # For Visual mode
-    shift_step: Optional[int] = None  # For Algorithmic mode
-    llm_pattern_model: Optional[str] = None  # LLM model for pattern generation
-    llm_pattern_model_params: Optional[LLMModelParams] = None  # LLM model parameters
-    llm_pattern_prompt: Optional[str] = None  # Custom prompt for LLM pattern generation
-    llm_designed_pattern: Optional[List[List[str]]] = None  # The actual LLM-generated pattern
 
 
 class TestSetCreateRequest(BaseModel):
@@ -1333,21 +1068,11 @@ class LeaderboardEntry(BaseModel):
     games_as_designer: int
     avg_score_as_player: float
     avg_score_as_designer: float
-    avg_in_game_designer_score: float = 0.0
-    avg_meta_designer_score: float = 0.0
     win_rate_as_player: float
     win_rate_as_designer: float
-    wins_as_player: int = 0
-    wins_as_designer: int = 0
-    inter_designer_win_rate: float = 0.0  # Added inter-designer win rate field
-    inter_designer_wins: int = 0  # Added inter-designer wins field
     total_games: int
-    overall_win_rate: float = 0.0
-    overall_wins: int = 0
-    cost_per_game: float = 0.0
-    total_cost: float = 0.0
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
+    overall_win_rate: float = 0.0  # 添加默认值
+    overall_wins: int = 0  # 添加默认值
 
 
 class LeaderboardResponse(BaseModel):
@@ -1392,7 +1117,7 @@ def append_message(game_id: str, player_id: str, role: str, content: str):
     key = get_chat_history_key(game_id, player_id)
     with chat_histories_lock:
         chat_histories[key].append({"role": role, "content": content})
-        # 限制消息历史长度，避免token মারাত্মক
+        # 限制消息历史长度，避免token过多
         if len(chat_histories[key]) > 50:  # 保留最近50条消息
             # 保留系统消息和最近的对话
             system_messages = [msg for msg in chat_histories[key] if msg["role"] == "system"]
@@ -1415,12 +1140,6 @@ GAME RULES:
 - Goal: Deduce the hidden pattern through strategic observation and logical reasoning
 - Scoring: +1 for each correct unobserved cell, -1 for each incorrect unobserved cell, 0 for observed cells
 
-COORDINATE SYSTEM:
-- Rows are numbered 0 to {grid_size - 1} (top to bottom)
-- Columns are numbered 0 to {grid_size - 1} (left to right)
-- When referring to cells, always use (row, col) format with 0-based indexing
-- Example: cell at row 0, column 1 is referenced as (0, 1)
-
 YOUR AVAILABLE ACTIONS:
 1. OBSERVE: Request to see specific cells (up to 3 cells per turn)
 2. GUESS: Submit a complete {grid_size}×{grid_size} grid as your hypothesis (ends the game)
@@ -1432,12 +1151,9 @@ Always respond with a JSON object:
   "action": "observe" | "guess" | "give_up",
   "cellsToObserve": [optional, for observe: [{{"row": 0, "col": 1}}, ...]],
   "guessGrid": [optional, for guess: complete {grid_size}×{grid_size} grid],
-  "reasoning": "Your very brief thought process",
+  "reasoning": "Your detailed thought process",
   "confidence": 0.85 [optional, 0-1 scale for guess actions]
 }}
-
-IMPORTANT: Always use 0-based row and column indices in your cellsToObserve coordinates.
-Row 0 is the top row, Column 0 is the leftmost column.
 
 STRATEGY: Look for patterns like symmetry, repetition, gradients. Observe strategically before guessing.
 Remember previous observations and build upon them to form hypotheses."""
@@ -1445,66 +1161,28 @@ Remember previous observations and build upon them to form hypotheses."""
             chat_histories[key] = [{"role": "system", "content": system_message}]
 
 
-# --- Token使用跟踪函数 ---
-
-def get_player_token_key(game_id: str, player_id: str) -> str:
-    """生成玩家token跟踪的唯一键"""
-    return f"{game_id}:{player_id}"
-
-
-def add_player_token_usage(game_id: str, player_id: str, input_tokens: int, output_tokens: int):
-    """添加玩家的token使用量"""
-    key = get_player_token_key(game_id, player_id)
-    with player_token_usage_lock:
-        player_token_usage[key]["input_tokens"] += input_tokens
-        player_token_usage[key]["output_tokens"] += output_tokens
-        logger.info(
-            f"玩家 {player_id} 累计token使用: 输入 {player_token_usage[key]['input_tokens']}, 输出 {player_token_usage[key]['output_tokens']}")
-
-
-def get_player_token_usage(game_id: str, player_id: str) -> Tuple[int, int]:
-    """获取玩家的累计token使用量"""
-    key = get_player_token_key(game_id, player_id)
-    with player_token_usage_lock:
-        return player_token_usage[key]["input_tokens"], player_token_usage[key]["output_tokens"]
-
-
-def clear_player_token_usage(game_id: str, player_id: str):
-    """清理玩家的token使用记录"""
-    key = get_player_token_key(game_id, player_id)
-    with player_token_usage_lock:
-        if key in player_token_usage:
-            del player_token_usage[key]
-
-
 # --- LLM Player 核心功能 ---
 
 def is_openai_model(model_name: str) -> bool:
-    """判断是否为OpenAI官方模型 - 基于缓存的模型列表或模型名称前缀"""
-    # 检查是否以openai_official/开头 - 这是OpenAI官方模型
-    if model_name.startswith("openai_official/"):
-        return True
-
-    # 检查缓存的OpenAI官方模型列表（不带前缀的原始模型名）
-    clean_model_name = model_name.replace("openai_official/", "")
+    """判断是否为OpenAI模型 - 基于缓存的模型列表"""
     with openai_models_cache_lock:
-        return clean_model_name in openai_models_cache
+        return model_name in openai_models_cache
 
 
-def build_openrouter_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any]:
-    """构建OpenRouter API调用参数"""
+def build_together_params(model_params: Optional[LLMModelParams]) -> Dict[str, Any]:
+    """构建Together.ai API调用参数"""
     params = {}
     if model_params:
         if model_params.temperature is not None:
             params["temperature"] = model_params.temperature
         if model_params.maxCompletionTokens is not None:
-            params["max_completion_tokens"] = model_params.maxCompletionTokens
+            params["max_completion_tokens"] = model_params.maxCompletionTokens  # Together.ai uses max_completion_tokens
         if model_params.topP is not None:
             params["top_p"] = model_params.topP
         if model_params.frequencyPenalty is not None:
             params["frequency_penalty"] = model_params.frequencyPenalty
         if model_params.presencePenalty is not None:
-            params["presence_penalty"] = model_params.presence_penalty
+            params["presence_penalty"] = model_params.presencePenalty
 
     # 设置默认值
     if "temperature" not in params:
@@ -1516,20 +1194,20 @@ def build_openrouter_params(model_params: Optional[LLMModelParams]) -> Dict[str,
 
 
 def build_openai_params(model_params: Optional[LLMModelParams], model_name: str = "") -> Dict[str, Any]:
-    """构建OpenAI API调用参数 - 统一使用max_completion_tokens"""
+    """构建OpenAI API调用参数 - 根据模型类型选择正确的参数名"""
     params = {}
 
     if model_params:
         if model_params.temperature is not None:
             params["temperature"] = model_params.temperature
         if model_params.maxCompletionTokens is not None:
-            params["max_completion_tokens"] = model_params.maxCompletionTokens
+                params["max_completion_tokens"] = model_params.maxCompletionTokens
         if model_params.topP is not None:
             params["top_p"] = model_params.topP
         if model_params.frequencyPenalty is not None:
             params["frequency_penalty"] = model_params.frequencyPenalty
         if model_params.presencePenalty is not None:
-            params["presence_penalty"] = model_params.presence_penalty
+            params["presence_penalty"] = model_params.presencePenalty
 
     # 设置默认值
     if "temperature" not in params:
@@ -1547,7 +1225,7 @@ def build_llm_player_prompt(
         turn_number: int,
         player_name: str
 ) -> str:
-    """构建LLM玩家的当前回合提示词 - 使用统一的坐标系统"""
+    """构建LLM玩家的当前回合提示词"""
 
     symbols_str = ", ".join(symbols_in_use)
     grid_display = format_grid_for_display(current_grid, grid_size)
@@ -1562,11 +1240,6 @@ Unknown cells: {unknown_cells}
 Current Grid (? = unknown):
 {grid_display}
 
-COORDINATE SYSTEM REMINDER:
-- Use 0-based indexing: rows 0-{grid_size - 1}, columns 0-{grid_size - 1}
-- Row 0 is the TOP row, Column 0 is the LEFT column
-- When observing cells, use {{"row": X, "col": Y}} format
-
 Analyze the current grid and decide your next action. Consider:
 - What patterns can you detect from the observed cells?
 - Which cells would give you the most information if observed?
@@ -1576,7 +1249,7 @@ Analyze the current grid and decide your next action. Consider:
 Don't forget your goal is to maximize your score by making the best guess with the least number of observations to get the highest score.
 
 Remember: Only use symbols from: {symbols_str}
-Use 0-based coordinates: row 0-{grid_size - 1}, col 0-{grid_size - 1}
+Row/Col indices: 0 to {grid_size - 1}
 
 What is your next move?"""
 
@@ -1615,479 +1288,33 @@ Your previous response was:
 
 Please correct the error and provide a valid response. Make sure to:
 1. Follow the exact JSON format required
-2. Use only the provided symbols: {symbols_str}
+2. Use only valid symbols from: {symbols_str}
 3. Ensure all coordinates are within bounds (0 to {grid_size - 1})
-4. Use 0-based indexing: row 0-{grid_size - 1}, col 0-{grid_size - 1}
-5. If guessing, provide a complete {grid_size}×{grid_size} grid
-6. Double-check your response format before submitting
-
-COORDINATE SYSTEM REMINDER:
-- Row 0 is the TOP row, Column 0 is the LEFT column
-- Use {{"row": X, "col": Y}} format for coordinates
+4. If guessing, provide a complete {grid_size}×{grid_size} grid
+5. Double-check your response format before submitting
 
 Remember: Only use symbols from: {symbols_str}
-Use 0-based coordinates: row 0-{grid_size - 1}, col 0-{grid_size - 1}
+Row/Col indices: 0 to {grid_size - 1}
 
 Please provide a corrected response:"""
 
     return prompt
-
-
-def build_design_error_correction_prompt(
-        grid_size: int,
-        num_symbols: int,
-        available_symbols: List[str],
-        user_prompt: Optional[str],
-        error_message: str,
-        previous_response: str
-) -> str:
-    """构建设计模式错误修正提示词"""
-    symbols_str = ", ".join(available_symbols)
-
-    base_requirement = "Design a pattern"
-    if user_prompt and user_prompt.strip():
-        requirement = f"{base_requirement} that follows the design requirement: {user_prompt.strip()}"
-    else:
-        requirement = base_requirement
-
-    prompt = f"""ERROR CORRECTION NEEDED for Pattern Design:
-
-ORIGINAL REQUIREMENT: {requirement}
-GRID SIZE: {grid_size}x{grid_size}
-AVAILABLE SYMBOLS: {symbols_str} (total: {num_symbols})
-
-Your previous response had an error: {error_message}
-
-Your previous response was:
-{previous_response}
-
-Please correct the error and provide a valid response. Make sure to:
-1. Return a valid JSON object with the exact structure required
-2. Use only the provided symbols: {symbols_str}
-3. Ensure the pattern is a {grid_size}x{grid_size} 2D array
-4. Each cell must contain one of the valid symbols
-5. The pattern should be logically deducible, not random
-6. Do NOT include any extra text, explanation, or formatting outside the JSON
-
-REQUIRED JSON FORMAT:
-{{
-  "pattern": [
-    ["symbol", "symbol", ...],
-    ["symbol", "symbol", ...],
-    ...
-  ],
-  "description": "Brief explanation of the pattern logic"
-}}
-
-Please provide a corrected response:"""
-
-    return prompt
-
-
-async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
-                                           max_retries: int = 10) -> Tuple[LLMPlayerTurnResponse, int, int]:
-    """带重试机制的LLM玩家回合逻辑，返回响应和token使用量"""
-    last_error = None
-    last_response = None
-    total_input_tokens = 0
-    total_output_tokens = 0
-
-    for retry_count in range(max_retries + 1):
-        try:
-            if retry_count == 0:
-                # 第一次尝试，使用正常逻辑
-                response, input_tokens, output_tokens = await llm_player_turn_logic(request)
-                total_input_tokens += input_tokens
-                total_output_tokens += output_tokens
-
-                # 记录token使用量
-                add_player_token_usage(request.gameId, request.playerId, input_tokens, output_tokens)
-
-                return response, total_input_tokens, total_output_tokens
-            else:
-                # 重试时，使用错误修正逻辑
-                logger.info(f"LLM玩家 {request.playerName} 第 {retry_count} 次重试")
-
-                # 构建错误修正提示词
-                error_prompt = build_error_correction_prompt(
-                    request.gridSize,
-                    request.symbolsInUse,
-                    request.currentGrid,
-                    request.turnNumber,
-                    request.playerName,
-                    str(last_error),
-                    last_response or "No previous response"
-                )
-
-                # 添加错误修正消息到对话历史
-                append_message(request.gameId, request.playerId, "user", error_prompt)
-
-                # 获取完整的消息历史用于API调用
-                messages = get_player_messages(request.gameId, request.playerId)
-
-                # 判断使用哪个API
-                if is_openai_model(request.llmModel):
-                    if not openai_client:
-                        raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
-
-                    # 构建OpenAI API参数
-                    api_params = build_openai_params(request.llmModelParams, request.llmModel)
-
-                    # 移除 openai_official/ 前缀获取真实模型名
-                    clean_model_name = request.llmModel.replace("openai_official/", "")
-
-                    # 调用OpenAI官方API
-                    response = await openai_client.chat.completions.create(
-                        model=clean_model_name,
-                        messages=messages,
-                        response_format={"type": "json_object"},
-                        **api_params
-                    )
-
-                    # 提取token使用量
-                    input_tokens = 0
-                    output_tokens = 0
-                    if hasattr(response, 'usage') and response.usage:
-                        input_tokens = response.usage.prompt_tokens or 0
-                        output_tokens = response.usage.completion_tokens or 0
-
-                else:
-                    if not openrouter_client:
-                        raise Exception("OpenRouter API客户端未初始化，请检查OPENROUTER_API_KEY环境变量")
-
-                    # 构建OpenRouter API参数
-                    api_params = build_openrouter_params(request.llmModelParams)
-
-                    # 调用OpenRouter API
-                    response_data = await openrouter_client.post(
-                        "/chat/completions",
-                        json={
-                            "model": request.llmModel or "openai/gpt-4o-mini",
-                            "messages": messages,
-                            "response_format": {"type": "json_object"},
-                            **api_params
-                        }
-                    )
-                    response_json = response_data.json()
-
-                    # 提取token使用量
-                    input_tokens = 0
-                    output_tokens = 0
-                    if 'usage' in response_json:
-                        usage = response_json['usage']
-                        input_tokens = usage.get('prompt_tokens', 0)
-                        output_tokens = usage.get('completion_tokens', 0)
-                    else:
-                        logger.warning(f"OpenRouter API 响应中缺少 'usage' 字段，模型: {request.llmModel}")
-
-                    # 转换为类似OpenAI的响应格式
-                    class MockResponse:
-                        def __init__(self, json_data):
-                            self.choices = [MockChoice(json_data['choices'][0])]
-
-                    class MockChoice:
-                        def __init__(self, choice_data):
-                            self.message = MockMessage(choice_data['message'])
-
-                    class MockMessage:
-                        def __init__(self, message_data):
-                            self.content = message_data['content']
-
-                    response = MockResponse(response_json)
-
-                total_input_tokens += input_tokens
-                total_output_tokens += output_tokens
-
-                # 记录token使用量
-                add_player_token_usage(request.gameId, request.playerId, input_tokens, output_tokens)
-
-                # 解析响应
-                content = response.choices[0].message.content
-                if not content:
-                    raise Exception("LLM返回空响应")
-
-                last_response = content
-
-                # 将LLM响应添加到对话历史
-                append_message(request.gameId, request.playerId, "assistant", content)
-
-                # 解析LLM响应
-                parsed_response = parse_llm_response(
-                    content,
-                    request.gridSize,
-                    request.symbolsInUse
-                )
-
-                logger.info(f"LLM玩家 {request.playerName} 第 {retry_count} 次重试成功")
-                return parsed_response, total_input_tokens, total_output_tokens
-
-        except Exception as e:
-            last_error = e
-            last_response = getattr(e, 'response_content', last_response)
-            logger.warning(f"LLM玩家 {request.playerName} 第 {retry_count + 1} 次尝试失败: {e}")
-
-            # 如果是最后一次重试，抛出异常
-            if retry_count == max_retries:
-                logger.error(f"LLM玩家 {request.playerName} 达到最大重试次数 ({max_retries})，放弃")
-                raise Exception(f"Maximum retries ({max_retries}) reached. Last error: {str(last_error)}")
-
-            # 短暂延迟后重试
-            await asyncio.sleep(1)
-
-    # 这行代码理论上不会执行到，但为了类型安全
-    raise Exception(f"Unexpected error in retry logic")
-
-
-async def design_pattern_logic_with_retry(request: DesignPatternRequest, max_retries: int = 10) -> DesignPatternResponse:
-    """带重试机制的设计模式逻辑"""
-    last_error = None
-    last_response = None
-
-    for retry_count in range(max_retries + 1):
-        try:
-            if retry_count == 0:
-                # 第一次尝试，使用正常逻辑
-                return await design_pattern_logic(request)
-            else:
-                # 重试时，使用错误修正逻辑
-                logger.info(f"设计模式生成第 {retry_count} 次重试")
-
-                current_symbols = ALL_SYMBOLS_PY[:request.numSymbols]
-
-                # 构建错误修正提示词
-                error_prompt = build_design_error_correction_prompt(
-                    request.gridSize,
-                    request.numSymbols,
-                    current_symbols,
-                    request.prompt,
-                    str(last_error),
-                    last_response or "No previous response"
-                )
-
-                # 判断使用哪个API
-                if is_openai_model(request.llmModel):
-                    if not openai_client:
-                        raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
-
-                    # 构建OpenAI API参数
-                    api_params = build_openai_params(request.llmModelParams, request.llmModel)
-                    # 对于设计模式，使用稍高的temperature以增加创造性
-                    if "temperature" not in api_params or api_params["temperature"] < 0.5:
-                        api_params["temperature"] = 0.7
-
-                    # 移除 openai_official/ 前缀获取真实模型名
-                    clean_model_name = request.llmModel.replace("openai_official/", "")
-
-                    response = await openai_client.chat.completions.create(
-                        model=clean_model_name,
-                        messages=[
-                            {"role": "user", "content": error_prompt}
-                        ],
-                        response_format={"type": "json_object"},
-                        **api_params
-                    )
-                else:
-                    if not openrouter_client:
-                        raise Exception("OpenRouter API客户端未初始化，请检查OPENROUTER_API_KEY环境变量")
-
-                    # 构建OpenRouter API参数
-                    api_params = build_openrouter_params(request.llmModelParams)
-                    # 对于设计模式，使用稍高的temperature以增加创造性
-                    if "temperature" not in api_params or api_params["temperature"] < 0.5:
-                        api_params["temperature"] = 0.7
-
-                    response_data = await openrouter_client.post(
-                        "/chat/completions",
-                        json={
-                            "model": request.llmModel or "openai/gpt-4o-mini",
-                            "messages": [
-                                {"role": "user", "content": error_prompt}
-                            ],
-                            "response_format": {"type": "json_object"},
-                            **api_params
-                        }
-                    )
-                    response_json = response_data.json()
-
-                    # 转换为类似OpenAI的响应格式
-                    class MockResponse:
-                        def __init__(self, json_data):
-                            self.choices = [MockChoice(json_data['choices'][0])]
-
-                    class MockChoice:
-                        def __init__(self, choice_data):
-                            self.message = MockMessage(choice_data['message'])
-
-                    class MockMessage:
-                        def __init__(self, message_data):
-                            self.content = message_data['content']
-
-                    response = MockResponse(response_json)
-
-                content = response.choices[0].message.content
-                if not content:
-                    raise Exception("LLM返回空响应")
-
-                last_response = content
-
-                parsed_response = json.loads(content)
-                llm_pattern = parsed_response.get("pattern")
-
-                if not llm_pattern:
-                    raise ValueError("LLM响应中缺少pattern字段")
-
-                # 使用改进的验证函数，支持字符串和数组格式
-                validated_pattern = validate_pattern(llm_pattern, request.gridSize, current_symbols)
-
-                logger.info(f"设计模式生成第 {retry_count} 次重试成功")
-                return DesignPatternResponse(pattern=validated_pattern)
-
-        except Exception as e:
-            last_error = e
-            last_response = getattr(e, 'response_content', last_response)
-            logger.warning(f"设计模式生成第 {retry_count + 1} 次尝试失败: {e}")
-
-            # 如果是最后一次重试，抛出异常
-            if retry_count == max_retries:
-                logger.error(f"设计模式生成达到最大重试次数 ({max_retries})，放弃")
-                raise Exception(f"Maximum retries ({max_retries}) reached. Last error: {str(last_error)}")
-
-            # 短暂延迟后重试
-            await asyncio.sleep(1)
-
-    # 这行代码理论上不会执行到，但为了类型安全
-    raise Exception(f"Unexpected error in design pattern retry logic")
-
-
-async def llm_player_turn_logic(request: LLMPlayerTurnRequest) -> Tuple[LLMPlayerTurnResponse, int, int]:
-    """LLM玩家回合逻辑 - 从端点中提取出来供后台任务使用，返回响应和token使用量"""
-    # 初始化玩家对话历史（如果是第一次）
-    initialize_player_chat(
-        request.gameId,
-        request.playerId,
-        request.playerName,
-        request.gridSize,
-        request.symbolsInUse
-    )
-
-    # 构建当前回合的提示词
-    current_prompt = build_llm_player_prompt(
-        request.gridSize,
-        request.symbolsInUse,
-        request.currentGrid,
-        request.turnNumber,
-        request.playerName
-    )
-
-    # 添加用户消息到对话历史
-    append_message(request.gameId, request.playerId, "user", current_prompt)
-
-    # 获取完整的消息历史用于API调用
-    messages = get_player_messages(request.gameId, request.playerId)
-
-    input_tokens = 0
-    output_tokens = 0
-
-    # 判断使用哪个API
-    if is_openai_model(request.llmModel):
-        if not openai_client:
-            raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
-
-        # 构建OpenAI API参数
-        api_params = build_openai_params(request.llmModelParams, request.llmModel)
-
-        # 移除 openai_official/ 前缀获取真实模型名
-        clean_model_name = request.llmModel.replace("openai_official/", "")
-
-        # 调用OpenAI官方API
-        response = await openai_client.chat.completions.create(
-            model=clean_model_name,
-            messages=messages,
-            response_format={"type": "json_object"},
-            **api_params
-        )
-
-        # 提取token使用量
-        if hasattr(response, 'usage') and response.usage:
-            input_tokens = response.usage.prompt_tokens or 0
-            output_tokens = response.usage.completion_tokens or 0
-            logger.info(f"OpenAI API token使用: 输入 {input_tokens}, 输出 {output_tokens}")
-
-    else:
-        if not openrouter_client:
-            raise Exception("OpenRouter API客户端未初始化，请检查OPENROUTER_API_KEY环境变量")
-
-        # 构建OpenRouter API参数
-        api_params = build_openrouter_params(request.llmModelParams)
-
-        # 调用OpenRouter API
-        response_data = await openrouter_client.post(
-            "/chat/completions",
-            json={
-                "model": request.llmModel or "openai/gpt-4o-mini",
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-                **api_params
-            }
-        )
-        response_json = response_data.json()
-
-        # 提取token使用量
-        if 'usage' in response_json:
-            usage = response_json['usage']
-            input_tokens = usage.get('prompt_tokens', 0)
-            output_tokens = usage.get('completion_tokens', 0)
-            logger.info(f"OpenRouter API token使用: 输入 {input_tokens}, 输出 {output_tokens}")
-        else:
-            logger.warning(f"OpenRouter API 响应中缺少 'usage' 字段，模型: {request.llmModel}")
-
-        # 转换为类似OpenAI的响应格式
-        class MockResponse:
-            def __init__(self, json_data):
-                self.choices = [MockChoice(json_data['choices'][0])]
-
-        class MockChoice:
-            def __init__(self, choice_data):
-                self.message = MockMessage(choice_data['message'])
-
-        class MockMessage:
-            def __init__(self, message_data):
-                self.content = message_data['content']
-
-        response = MockResponse(response_json)
-
-    # 解析响应
-    content = response.choices[0].message.content
-    if not content:
-        raise Exception("LLM返回空响应")
-
-    # 将LLM响应添加到对话历史
-    append_message(request.gameId, request.playerId, "assistant", content)
-
-    # 解析LLM响应
-    parsed_response = parse_llm_response(
-        content,
-        request.gridSize,
-        request.symbolsInUse
-    )
-
-    return parsed_response, input_tokens, output_tokens
 
 
 def format_grid_for_display(grid: List[List[str]], grid_size: int) -> str:
-    """将网格格式化为易读的显示格式 - 使用统一的坐标系统"""
+    """将网格格式化为易读的显示格式"""
     if not grid or len(grid) == 0:
         return "Empty grid"
 
-    # 创建列标题 (0, 1, 2, ...)
-    header = "    " + "   ".join(str(i) for i in range(grid_size))
+    # 创建列标题
+    header = "    " + "   ".join(chr(65 + i) for i in range(grid_size))
     lines = [header]
 
     # 添加分隔线
     separator = "  " + "---" * grid_size + "-" * (grid_size - 1)
     lines.append(separator)
 
-    # 添加每一行 (行号在左侧)
+    # 添加每一行
     for i in range(grid_size):
         if i < len(grid):
             row_data = []
@@ -2100,9 +1327,9 @@ def format_grid_for_display(grid: List[List[str]], grid_size: int) -> str:
                         row_data.append(f" {cell} ")
                 else:
                     row_data.append(" ? ")
-            row_str = f"{i} |" + "|".join(row_data) + "|"
+            row_str = f"{i + 1} |" + "|".join(row_data) + "|"
         else:
-            row_str = f"{i} |" + "|".join([" ? "] * grid_size) + "|"
+            row_str = f"{i + 1} |" + "|".join([" ? "] * grid_size) + "|"
         lines.append(row_str)
 
     return "\n".join(lines)
@@ -2224,14 +1451,14 @@ DESIGN GOALS:
 5. Feel free to use your creativity, as long as the logic is consistent.
 
 RESPONSE FORMAT (IMPORTANT):
-You must return a valid JSON object with the this **exact structure**:
+You must return a valid JSON object with this **exact structure**:
 {{
   "pattern": [
     ["", "", ...],
     ["", "", ...],
     ...
   ],
-  "description": "Very brief explanation of the underlying pattern logic and design inspiration."
+  "description": "Brief explanation of the underlying pattern logic and design inspiration."
 }}
 
 CRITICAL NOTES:
@@ -2267,11 +1494,8 @@ async def design_pattern_logic(request: DesignPatternRequest) -> DesignPatternRe
         if "temperature" not in api_params or api_params["temperature"] < 0.5:
             api_params["temperature"] = 0.7
 
-        # 移除 openai_official/ 前缀获取真实模型名
-        clean_model_name = request.llmModel.replace("openai_official/", "")
-
         response = await openai_client.chat.completions.create(
-            model=clean_model_name,
+            model=request.llmModel or "gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -2280,43 +1504,25 @@ async def design_pattern_logic(request: DesignPatternRequest) -> DesignPatternRe
             **api_params
         )
     else:
-        if not openrouter_client:
-            raise Exception("OpenRouter API客户端未初始化，请检查OPENROUTER_API_KEY环境变量")
+        if not together_client:
+            raise Exception("Together.ai API客户端未初始化，请检查TOGETHER_API_KEY环境变量")
 
-        # 构建OpenRouter API参数
-        api_params = build_openrouter_params(request.llmModelParams)
+        # 构建Together.ai API参数
+        api_params = build_together_params(request.llmModelParams)
         # 对于设计模式，使用稍高的temperature以增加创造性
         if "temperature" not in api_params or api_params["temperature"] < 0.5:
             api_params["temperature"] = 0.7
 
-        response_data = await openrouter_client.post(
-            "/chat/completions",
-            json={
-                "model": request.llmModel or "openai/gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "response_format": {"type": "json_object"},
-                **api_params
-            }
+        response = await asyncio.to_thread(
+            together_client.chat.completions.create,
+            model=request.llmModel or "deepseek-ai/DeepSeek-V3",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"},
+            **api_params
         )
-        response_json = response_data.json()
-
-        # 转换为类似OpenAI的响应格式
-        class MockResponse:
-            def __init__(self, json_data):
-                self.choices = [MockChoice(json_data['choices'][0])]
-
-        class MockChoice:
-            def __init__(self, choice_data):
-                self.message = MockMessage(choice_data['message'])
-
-        class MockMessage:
-            def __init__(self, message_data):
-                self.content = message_data['content']
-
-        response = MockResponse(response_json)
 
     content = response.choices[0].message.content
     if not content:
@@ -2334,8 +1540,186 @@ async def design_pattern_logic(request: DesignPatternRequest) -> DesignPatternRe
     return DesignPatternResponse(pattern=validated_pattern)
 
 
+async def llm_player_turn_logic(request: LLMPlayerTurnRequest) -> LLMPlayerTurnResponse:
+    """LLM玩家回合逻辑 - 从端点中提取出来供后台任务使用"""
+    # 初始化玩家对话历史（如果是第一次）
+    initialize_player_chat(
+        request.gameId,
+        request.playerId,
+        request.playerName,
+        request.gridSize,
+        request.symbolsInUse
+    )
+
+    # 构建当前回合的提示词
+    current_prompt = build_llm_player_prompt(
+        request.gridSize,
+        request.symbolsInUse,
+        request.currentGrid,
+        request.turnNumber,
+        request.playerName
+    )
+
+    # 添加用户消息到对话历史
+    append_message(request.gameId, request.playerId, "user", current_prompt)
+
+    # 获取完整的消息历史用于API调用
+    messages = get_player_messages(request.gameId, request.playerId)
+
+    # 判断使用哪个API
+    if is_openai_model(request.llmModel):
+        if not openai_client:
+            raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
+
+        # 构建OpenAI API参数
+        api_params = build_openai_params(request.llmModelParams, request.llmModel)
+
+        # 调用OpenAI API
+        response = await openai_client.chat.completions.create(
+            model=request.llmModel or "gpt-4o-mini",
+            messages=messages,
+            response_format={"type": "json_object"},
+            **api_params
+        )
+        print("OpenAI response:", response)
+    else:
+        if not together_client:
+            raise Exception("Together.ai API客户端未初始化，请检查TOGETHER_API_KEY环境变量")
+
+        # 构建Together.ai API参数
+        api_params = build_together_params(request.llmModelParams)
+
+        # 调用Together.ai API
+        response = await asyncio.to_thread(
+            together_client.chat.completions.create,
+            model=request.llmModel or "deepseek-ai/DeepSeek-V3",
+            messages=messages,
+            response_format={"type": "json_object"},
+            **api_params
+        )
+
+        print("Together.ai response:", response)
+
+    # 解析响应
+    content = response.choices[0].message.content
+    if not content:
+        raise Exception("LLM返回空响应")
+
+    # 将LLM响应添加到对话历史
+    append_message(request.gameId, request.playerId, "assistant", content)
+
+    # 解析LLM响应
+    parsed_response = parse_llm_response(
+        content,
+        request.gridSize,
+        request.symbolsInUse
+    )
+
+    return parsed_response
+
+
+async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
+                                           max_retries: int = 10) -> LLMPlayerTurnResponse:
+    """带重试机制的LLM玩家回合逻辑"""
+    last_error = None
+    last_response = None
+
+    for retry_count in range(max_retries + 1):
+        try:
+            if retry_count == 0:
+                # 第一次尝试，使用正常逻辑
+                return await llm_player_turn_logic(request)
+            else:
+                # 重试时，使用错误修正逻辑
+                logger.info(f"LLM玩家 {request.playerName} 第 {retry_count} 次重试")
+
+                # 构建错误修正提示词
+                error_prompt = build_error_correction_prompt(
+                    request.gridSize,
+                    request.symbolsInUse,
+                    request.currentGrid,
+                    request.turnNumber,
+                    request.playerName,
+                    str(last_error),
+                    last_response or "No previous response"
+                )
+
+                # 添加错误修正消息到对话历史
+                append_message(request.gameId, request.playerId, "user", error_prompt)
+
+                # 获取完整的消息历史用于API调用
+                messages = get_player_messages(request.gameId, request.playerId)
+
+                # 判断使用哪个API
+                if is_openai_model(request.llmModel):
+                    if not openai_client:
+                        raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
+
+                    # 构建OpenAI API参数
+                    api_params = build_openai_params(request.llmModelParams, request.llmModel)
+
+                    # 调用OpenAI API
+                    response = await openai_client.chat.completions.create(
+                        model=request.llmModel or "gpt-4o-mini",
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        **api_params
+                    )
+                else:
+                    if not together_client:
+                        raise Exception("Together.ai API客户端未初始化，请检查TOGETHER_API_KEY环境变量")
+
+                    # 构建Together.ai API参数
+                    api_params = build_together_params(request.llmModelParams)
+
+                    # 调用Together.ai API
+                    response = await asyncio.to_thread(
+                        together_client.chat.completions.create,
+                        model=request.llmModel or "deepseek-ai/DeepSeek-V3",
+                        messages=messages,
+                        response_format={"type": "json_object"},
+                        **api_params
+                    )
+
+                # 解析响应
+                content = response.choices[0].message.content
+                if not content:
+                    raise Exception("LLM返回空响应")
+
+                last_response = content
+
+                # 将LLM响应添加到对话历史
+                append_message(request.gameId, request.playerId, "assistant", content)
+
+                # 解析LLM响应
+                parsed_response = parse_llm_response(
+                    content,
+                    request.gridSize,
+                    request.symbolsInUse
+                )
+
+                logger.info(f"LLM玩家 {request.playerName} 第 {retry_count} 次重试成功")
+                return parsed_response
+
+        except Exception as e:
+            last_error = e
+            last_response = getattr(e, 'response_content', last_response)
+            logger.warning(f"LLM玩家 {request.playerName} 第 {retry_count + 1} 次尝试失败: {e}")
+
+            # 如果是最后一次重试，抛出异常
+            if retry_count == max_retries:
+                logger.error(f"LLM玩家 {request.playerName} 达到最大重试次数 ({max_retries})，放弃")
+                raise Exception(f"Maximum retries ({max_retries}) reached. Last error: {str(last_error)}")
+
+            # 短暂延迟后重试
+            await asyncio.sleep(1)
+
+    # 这行代码理论上不会执行到，但为了类型安全
+    raise Exception(f"Unexpected error in retry logic")
+
+
 async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
-    """保存游戏逻辑的核心实现"""
+    """保存游戏逻辑 - 从端点中提取出来供后台任务使用"""
     if not db_pool:
         raise Exception("Database not connected")
 
@@ -2358,56 +1742,8 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
             json.dumps(request.master_pattern), json.dumps(request.game_config_dump), request.test_set_id
         )
 
-        # First, collect all player scores for player-only ranking
-        player_scores = []
         for player in request.players:
-            # Create a unique ID for player including model and params
-            player_params_dict = player.player_llm_model_params.dict(
-                exclude_none=True) if player.player_llm_model_params else {}
-            player_id = f"{player.player_llm_model or 'unknown_model'}#{json.dumps(player_params_dict)}"
-            player_scores.append((player_id, player.final_score or 0))
-
-        # Calculate ranks for players only
-        player_ranks = calculate_ranks(player_scores)
-
-        # Calculate designer scores using the new algorithm
-        player_score_values = [score for _, score in player_scores]
-        in_game_designer_score, meta_designer_score = calculate_designer_scores(
-            player_score_values,
-            request.grid_size,
-            request.num_symbols
-        )
-
-        logger.info(
-            f"游戏 {game_id}: 设计师分数计算 - In-game: {in_game_designer_score:.2f}, Meta: {meta_designer_score:.2f}")
-
-        # Collect all participant scores (players + designer) for overall ranking
-        # Use in_game_designer_score for ranking instead of old designer_score
-        all_participant_scores = player_scores.copy()
-        designer_input_tokens = 0
-        designer_output_tokens = 0
-        designer_id = None
-
-        if request.designer_type == "LLM" and request.designer_llm_model:
-            designer_params_dict = request.designer_llm_model_params.dict(
-                exclude_none=True) if request.designer_llm_model_params else {}
-            designer_id = f"{request.designer_llm_model}#{json.dumps(designer_params_dict)}"
-            all_participant_scores.append((designer_id, in_game_designer_score))
-
-        all_ranks = calculate_ranks(all_participant_scores)
-
-        for player in request.players:
-            # Safety check for player_llm_model_params
-            player_params_dict = player.player_llm_model_params.dict(
-                exclude_none=True) if player.player_llm_model_params else {}
-            player_id = f"{player.player_llm_model or 'unknown_model'}#{json.dumps(player_params_dict)}"
-
-            # Get player rank (players only)
-            player_rank = player_ranks.get(player_id, len(player_scores))
-
-            player_rank_incl_designer = all_ranks.get(player_id, len(all_participant_scores))
-
-            # Safety check for queried_cells
+            # 安全地处理 queried_cells
             queried_cells_json = None
             if player.queried_cells:
                 try:
@@ -2416,89 +1752,22 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
                     logger.warning(f"Failed to serialize queried_cells for player {player.player_name_in_game}: {e}")
                     queried_cells_json = None
 
-            # Serialize player model params
+            # 序列化玩家模型参数
             player_params_json = None
             if player.player_llm_model_params:
                 player_params_json = json.dumps(player.player_llm_model_params.dict(exclude_none=True))
 
-            # Use provided token data
-            input_tokens = player.input_tokens or 0
-            output_tokens = player.output_tokens or 0
-
-            logger.info(f"保存玩家 {player.player_name_in_game} token数据: 输入 {input_tokens}, 输出 {output_tokens}")
             await conn.execute(
                 """
                 INSERT INTO game_players (game_id, player_name_in_game, player_type, player_llm_model,
-                                          player_llm_model_params,
-                                          final_score, final_guess, action_log, queried_cells, input_tokens,
-                                          output_tokens)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                                          player_llm_model_params, final_score, final_guess, action_log, queried_cells)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
-                game_id, player.player_name_in_game, player.player_type, player.player_llm_model, player_params_json,
-                player.final_score,
+                game_id, player.player_name_in_game, player.player_type,
+                player.player_llm_model, player_params_json, player.final_score,
                 json.dumps(player.final_guess) if player.final_guess else None,
                 json.dumps(player.action_log) if player.action_log else None,
-                queried_cells_json,
-                input_tokens, output_tokens
-            )
-
-            await conn.execute(
-                """
-                INSERT INTO game_analytics (game_id, grid_size, num_symbols, test_set_id,
-                                            participant_role, participant_id, participant_name, participant_type,
-                                            participant_llm_model, participant_llm_model_params,
-                                            final_score, in_game_designer_score, meta_designer_score,
-                                            rank_in_game, rank_in_game_incl_designer,
-                                            observation_count, observation_rounds, did_quit,
-                                            final_guess, action_log, queried_cells, master_pattern,
-                                            input_tokens, output_tokens)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                        $22, $23, $24)
-                """,
-                game_id, request.grid_size, request.num_symbols, request.test_set_id,
-                'player', player_id, player.player_name_in_game, player.player_type,
-                player.player_llm_model, player_params_json,
-                player.final_score, 0.0, 0.0,  # Players don't have designer scores
-                player_rank, player_rank_incl_designer,
-                analyze_action_log(player.action_log)[0], analyze_action_log(player.action_log)[1],
-                analyze_action_log(player.action_log)[2],
-                json.dumps(player.final_guess) if player.final_guess else None,
-                json.dumps(player.action_log) if player.action_log else None,
-                queried_cells_json,
-                json.dumps(request.master_pattern),
-                input_tokens, output_tokens
-            )
-
-        if request.designer_type == "LLM" and request.designer_llm_model:
-            # Serialize designer model parameters
-            designer_params_json = None
-            if request.designer_llm_model_params:
-                designer_params_json = json.dumps(request.designer_llm_model_params.dict(exclude_none=True))
-
-            designer_rank_incl_designer = all_ranks.get(designer_id, len(all_participant_scores))
-
-            await conn.execute(
-                """
-                INSERT INTO game_analytics (game_id, grid_size, num_symbols, test_set_id,
-                                            participant_role, participant_id, participant_name, participant_type,
-                                            participant_llm_model, participant_llm_model_params,
-                                            final_score, in_game_designer_score, meta_designer_score,
-                                            rank_in_game, rank_in_game_incl_designer,
-                                            observation_count, observation_rounds, did_quit,
-                                            final_guess, action_log, queried_cells, master_pattern,
-                                            input_tokens, output_tokens)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                        $22, $23, $24)
-                """,
-                game_id, request.grid_size, request.num_symbols, request.test_set_id,
-                'designer', designer_id, 'Designer', request.designer_type,
-                request.designer_llm_model, designer_params_json,
-                int(in_game_designer_score), in_game_designer_score, meta_designer_score,
-                0, designer_rank_incl_designer,
-                0, 0, 0,
-                None, None, None,
-                json.dumps(request.master_pattern),
-                designer_input_tokens, designer_output_tokens
+                queried_cells_json
             )
 
         logger.info(f"Game saved successfully with ID: {game_id}")
@@ -2508,81 +1777,116 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
 # --- 获取模型列表的逻辑函数 ---
 
 async def get_available_models_logic() -> ModelsListResponse:
-    """获取可用的模型列表 - 合并OpenRouter和OpenAI官方模型"""
+    """获取可用的模型列表的核心逻辑 - 合并Together.ai和OpenAI模型"""
     logger.info("正在获取模型列表...")
 
     all_models = []
 
-    # 获取OpenRouter模型
-    if openrouter_client:
+    # 获取Together.ai模型
+    if together_client:
         try:
-            logger.info("正在从OpenRouter API获取模型列表...")
-            response_data = await openrouter_client.get("/models")
-            response_json = response_data.json()
+            logger.info("正在从Together.ai API获取模型列表...")
+            models_response = await asyncio.to_thread(together_client.models.list)
+            logger.info(f"Together.ai API返回了模型数据，类型: {type(models_response)}")
 
-            if 'data' in response_json:
-                models_data = response_json['data']
-                logger.info(f"从OpenRouter获取到 {len(models_data)} 个模型")
+            # 处理不同的响应格式
+            if hasattr(models_response, 'data'):
+                models_data = models_response.data
+                logger.info(f"从data属性获取到 {len(models_data)} 个Together.ai模型")
+            elif isinstance(models_response, list):
+                models_data = models_response
+                logger.info(f"直接从列表获取到 {len(models_data)} 个Together.ai模型")
+            else:
+                models_data = list(models_response) if models_response else []
+                logger.info(f"转换后获取到 {len(models_data)} 个Together.ai模型")
 
-                # 过滤出适合的模型
-                for model in models_data:
-                    try:
-                        model_id = model.get('id', '')
-                        model_name = model.get('name', model_id)
+            # 需要排除的特定模型列表
+            exclude_models = [
+                'meta-llama/Llama-Vision-Free',
+                'meta-llama/Llama-Guard-3-8B',
+                'microsoft/DialoGPT-medium',
+                'togethercomputer/RedPajama-INCITE-Base-3B-v1',
+                'togethercomputer/RedPajama-INCITE-Instruct-3B-v1',
+            ]
 
-                        # 跳过一些不适合的模型
-                        if any(skip in model_id.lower() for skip in
-                               ['embedding', 'whisper', 'tts', 'dall-e']):
-                            continue
+            # 过滤出聊天模型
+            for model in models_data:
+                try:
+                    model_id = getattr(model, 'id', str(model))
+                    model_type = getattr(model, 'type', '').lower()
 
-                        all_models.append(OpenRouterModel(
-                            id=model_id,  # 保持原始ID，不添加前缀
-                            name=model_name,
-                            created=model.get('created', 0),
-                            description=model.get('description'),
-                            architecture=model.get('architecture'),
-                            top_provider=model.get('top_provider'),
-                            pricing=model.get('pricing'),
-                            canonical_slug=model.get('canonical_slug'),
-                            context_length=model.get('context_length'),
-                            hugging_face_id=model.get('hugging_face_id'),
-                            per_request_limits=model.get('per_request_limits'),
-                            supported_parameters=model.get('supported_parameters')
+                    # 只包含聊天模型，并排除特定模型
+                    if model_type == 'chat' and model_id not in exclude_models:
+                        # 安全地处理pricing字段
+                        pricing_data = getattr(model, 'pricing', None)
+                        if pricing_data is not None and hasattr(pricing_data, '__dict__'):
+                            try:
+                                pricing_dict = pricing_data.__dict__ if hasattr(pricing_data, '__dict__') else None
+                            except:
+                                pricing_dict = None
+                        else:
+                            pricing_dict = pricing_data
+
+                        all_models.append(TogetherModel(
+                            id=model_id,
+                            object="model",
+                            created=getattr(model, 'created', 0),
+                            owned_by=getattr(model, 'owned_by', 'together'),
+                            type=getattr(model, 'type', None),
+                            display_name=getattr(model, 'display_name', None),
+                            organization=getattr(model, 'organization', None),
+                            context_length=getattr(model, 'context_length', None),
+                            link=getattr(model, 'link', None),
+                            license=getattr(model, 'license', None),
+                            pricing=pricing_dict
                         ))
-                    except Exception as e:
-                        logger.warning(f"跳过OpenRouter模型 {model.get('id', 'unknown')} 由于错误: {e}")
-                        continue
+                except Exception as e:
+                    logger.warning(f"跳过Together.ai模型 {getattr(model, 'id', 'unknown')} 由于错误: {e}")
+                    continue
 
         except Exception as e:
-            logger.error(f"获取OpenRouter模型列表失败: {str(e)}")
+            logger.error(f"获取Together.ai模型列表失败: {str(e)}")
 
-    # 添加OpenAI官方模型 - 使用 openai_official/ 前缀
+    # 添加OpenAI模型 - 使用缓存的模型列表
     with openai_models_cache_lock:
         cached_openai_models = openai_models_cache.copy()
 
-    # 创建一个集合来跟踪已添加的模型ID，避免重复
-    existing_model_ids = {model.id for model in all_models}
-
     for model_id in cached_openai_models:
-        # 为OpenAI官方模型添加 openai_official/ 前缀
-        prefixed_id = f"openai_official/{model_id}"
+        all_models.append(TogetherModel(
+            id=model_id,
+            object="model",
+            created=0,
+            owned_by="openai",
+            type="chat",
+            display_name=model_id,
+            organization="openai",
+            context_length=None,
+            link=None,
+            license=None,
+            pricing=None
+        ))
 
-        # 检查是否已存在，避免重复
-        if prefixed_id not in existing_model_ids:
-            all_models.append(OpenRouterModel(
-                id=prefixed_id,
-                name=f"OpenAI Official: {model_id}",
-                created=0,
-                description=f"OpenAI官方 {model_id} 模型",
-                context_length=None
-            ))
-            existing_model_ids.add(prefixed_id)
+    logger.info(f"从缓存添加了 {len(cached_openai_models)} 个OpenAI模型")
 
-    logger.info(f"从缓存添加了 {len(cached_openai_models)} 个OpenAI官方模型")
-
-    # 按模型名称排序，优先显示常用模型
+    # 按模型名称排序，优先显示常用模型，默认模型为deepseek-ai/DeepSeek-V3
     priority_models = [
-        'openai_official/chatgpt-4o-latest',
+        'deepseek-ai/DeepSeek-V3',
+        'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+        'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+        'meta-llama/Llama-3.2-3B-Instruct-Turbo',
+        'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo',
+        'Qwen/Qwen2.5-7B-Instruct-Turbo',
+        'Qwen/Qwen2.5-72B-Instruct-Turbo',
+        'mistralai/Mixtral-8x7B-Instruct-v0.1',
+        'google/gemma-2-9b-it',
+        'chatgpt-4o-latest',
+        'gpt-4o',
+        'gpt-4o-mini',
+        'gpt-4',
+        'gpt-4-turbo',
+        'gpt-3.5-turbo',
+        'o1-preview',
+        'o1-mini'
     ]
 
     def sort_key(model):
@@ -2598,15 +1902,15 @@ async def get_available_models_logic() -> ModelsListResponse:
     if not all_models:
         logger.info("返回默认模型列表")
         default_models = [
-            OpenRouterModel(id="openai_official/chatgpt-4o-latest", name="OpenAI Official: ChatGPT-4o Latest",
-                            created=0),
-            OpenRouterModel(id="openai_official/gpt-4o-mini", name="OpenAI Official: GPT-4o Mini", created=0),
-            OpenRouterModel(id="openai_official/gpt-4o", name="OpenAI Official: GPT-4o", created=0),
-            OpenRouterModel(id="openai/gpt-4o-mini", name="GPT-4o Mini (via OpenRouter)", created=0),
-            OpenRouterModel(id="deepseek/deepseek-chat", name="DeepSeek Chat", created=0),
-            OpenRouterModel(id="anthropic/claude-3-5-sonnet", name="Claude 3.5 Sonnet", created=0),
-            OpenRouterModel(id="meta-llama/llama-3.1-8b-instruct", name="Llama 3.1 8B Instruct", created=0),
-            OpenRouterModel(id="qwen/qwen-2.5-7b-instruct", name="Qwen 2.5 7B Instruct", created=0),
+            TogetherModel(id="deepseek-ai/DeepSeek-V3", object="model", created=0, owned_by="together"),
+            TogetherModel(id="gpt-4o-mini", object="model", created=0, owned_by="openai"),
+            TogetherModel(id="gpt-4o", object="model", created=0, owned_by="openai"),
+            TogetherModel(id="chatgpt-4o-latest", object="model", created=0, owned_by="openai"),
+            TogetherModel(id="meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", object="model", created=0,
+                          owned_by="together"),
+            TogetherModel(id="meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo", object="model", created=0,
+                          owned_by="together"),
+            TogetherModel(id="Qwen/Qwen2.5-7B-Instruct-Turbo", object="model", created=0, owned_by="together"),
         ]
         return ModelsListResponse(
             object="list",
@@ -2620,7 +1924,7 @@ async def get_available_models_logic() -> ModelsListResponse:
     )
 
 
-# --- API端点 ---
+# --- API端点实现 ---
 
 @app.get("/api/models", response_model=ModelsListResponse)
 @app.post("/api/models", response_model=ModelsListResponse)
@@ -2636,14 +1940,7 @@ async def llm_player_turn_endpoint(request: LLMPlayerTurnRequest):
     logger.info(f"LLM玩家 {request.playerName} 第{request.turnNumber}回合开始")
 
     try:
-        response, input_tokens, output_tokens = await llm_player_turn_logic_with_retry(request)
-        logger.info(f"LLM玩家 {request.playerName} 使用了 {input_tokens} 输入token, {output_tokens} 输出token")
-
-        # 在响应中包含token信息
-        response.input_tokens = input_tokens
-        response.output_tokens = output_tokens
-
-        return response
+        return await llm_player_turn_logic_with_retry(request)
 
     except Exception as e:
         logger.error(f"LLM API错误: {e}")
@@ -2663,7 +1960,7 @@ async def llm_player_turn_endpoint(request: LLMPlayerTurnRequest):
 async def design_pattern_endpoint(request: DesignPatternRequest):
     """使用LLM生成游戏模式"""
     try:
-        return await design_pattern_logic_with_retry(request)
+        return await design_pattern_logic(request)
 
     except json.JSONDecodeError as e:
         logger.error(f"JSON解析失败: {e}")
@@ -2731,7 +2028,7 @@ async def get_games_list_endpoint(limit: int = 50, offset: int = 0, test_set_id:
 
 @app.get("/api/games/{game_id}")
 async def get_game_details_endpoint(game_id: str):
-    """获取特定游戏的详细信息，包括计算的设计师分数"""
+    """获取特定游戏的详细信息"""
     if not db_pool:
         raise HTTPException(status_code=500, detail="Database not connected")
 
@@ -2745,8 +2042,6 @@ async def get_game_details_endpoint(game_id: str):
                                            game_id)
 
             players = []
-            player_scores = []
-
             for row in player_rows:
                 player_data = {
                     'player_name_in_game': row['player_name_in_game'],
@@ -2758,10 +2053,6 @@ async def get_game_details_endpoint(game_id: str):
                     'action_log': None,
                     'queried_cells': []
                 }
-
-                # 收集玩家分数用于计算设计师分数
-                if row['final_score'] is not None:
-                    player_scores.append(row['final_score'])
 
                 # 解析玩家模型参数
                 if row['player_llm_model_params']:
@@ -2794,15 +2085,6 @@ async def get_game_details_endpoint(game_id: str):
 
                 players.append(player_data)
 
-            # Calculate designer scores using the new algorithm
-            in_game_designer_score = None
-            meta_designer_score = None
-            if game_row['designer_type'] == 'LLM' and len(player_scores) > 0:
-                in_game_designer_score, meta_designer_score = calculate_designer_scores(
-                    player_scores, game_row['grid_size'], game_row['num_symbols']
-                )
-                designer_score = int(round(in_game_designer_score))  # Cast to int for score consistency
-
             # 解析设计师模型参数
             designer_model_params = None
             if game_row['designer_llm_model_params']:
@@ -2823,9 +2105,7 @@ async def get_game_details_endpoint(game_id: str):
                 'designer_pattern_mode': game_row['designer_pattern_mode'],
                 'master_pattern': json.loads(game_row['master_pattern']),
                 'game_config_dump': json.loads(game_row['game_config_dump']),
-                'players': players,
-                'in_game_designer_score': in_game_designer_score,
-                'meta_designer_score': meta_designer_score
+                'players': players
             }
 
             return game_data
@@ -2873,15 +2153,7 @@ async def create_test_set_endpoint(request: TestSetCreateRequest):
                     "num_symbols": g.num_symbols,
                     "optional_prompt": g.optional_prompt,
                     "custom_pattern": g.custom_pattern,
-                    "repeat_count": g.repeat_count,
-                    "pattern_mode": g.pattern_mode,
-                    "symmetry_type": g.symmetry_type,
-                    "shift_step": g.shift_step,
-                    "llm_pattern_model": g.llm_pattern_model,
-                    "llm_pattern_model_params": g.llm_pattern_model_params.dict(
-                        exclude_none=True) if g.llm_pattern_model_params else None,
-                    "llm_pattern_prompt": g.llm_pattern_prompt,
-                    "llm_designed_pattern": g.llm_designed_pattern,
+                    "repeat_count": g.repeat_count
                 }
                 for g in request.games
             ]
@@ -3039,38 +2311,13 @@ async def update_test_set_status_endpoint(test_set_id: str, request: TestSetStat
 
 
 @app.get("/api/leaderboard", response_model=LeaderboardResponse)
-async def get_leaderboard_endpoint(test_set_id: Optional[str] = None, force_recalculate: bool = False):
+async def get_leaderboard_endpoint(test_set_id: Optional[str] = None):
     """获取排行榜"""
     if not db_pool:
         raise HTTPException(status_code=500, detail="Database not connected")
 
     try:
         calculator = LeaderboardCalculator(db_pool)
-
-        # 首先尝试从缓存获取排行榜数据
-        if not force_recalculate:
-            cached_data = await calculator.get_cached_leaderboard(test_set_id)
-            if cached_data:
-                logger.info("使用缓存的排行榜数据")
-
-                test_set_name = None
-                if test_set_id:
-                    async with db_pool.acquire() as conn:
-                        test_set_row = await conn.fetchrow("SELECT name FROM test_sets WHERE id = $1", test_set_id)
-                        if test_set_row:
-                            test_set_name = test_set_row['name']
-
-                entries = [LeaderboardEntry(**entry) for entry in cached_data]
-
-                return LeaderboardResponse(
-                    test_set_id=test_set_id,
-                    test_set_name=test_set_name,
-                    entries=entries,
-                    generated_at=datetime.now()
-                )
-
-        # 如果没有缓存或强制重新计算，则计算新的排行榜
-        logger.info(f"计算新的排行榜数据，force_recalculate={force_recalculate}")
         leaderboard_data = await calculator.calculate_leaderboard(test_set_id)
 
         test_set_name = None
@@ -3126,16 +2373,16 @@ async def get_current_game_state_endpoint(test_set_id: str):
 async def health_check():
     """健康检查"""
     db_status = "connected" if db_pool else "disconnected"
-    openrouter_status = "configured" if openrouter_client else "not configured"
+    together_status = "configured" if together_client else "not configured"
     openai_status = "configured" if openai_client else "not configured"
 
     return {
         "status": "healthy",
-        "openrouter_configured": bool(openrouter_client),
+        "together_configured": bool(together_client),
         "openai_configured": bool(openai_client),
         "database_connected": bool(db_pool),
         "database_status": db_status,
-        "openrouter_status": openrouter_status,
+        "together_status": together_status,
         "openai_status": openai_status
     }
 

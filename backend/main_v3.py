@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 import threading
 from collections import defaultdict
 import openai
-import numpy as np
 
 # 导入排行榜模块
 try:
@@ -31,8 +30,9 @@ except ImportError:
         async def calculate_leaderboard(self, test_set_id=None):
             return []
 
-        async def get_cached_leaderboard(self, test_set_id=None):
-            return None
+
+    async def create_leaderboard_tables(db_pool):
+        pass
 
 # 加载环境变量
 load_dotenv()
@@ -273,30 +273,17 @@ class BackgroundTasksManager:
                         }
                         game_configs.append(game_config)
                 else:
-                    # Check if there's an LLM-designed pattern
-                    pattern_mode = game_template.get('pattern_mode', 'Random')
-                    designer_config = {
-                        'type': 'Human',
-                        'patternMode': pattern_mode,
-                    }
-
-                    # If LLM mode with a designed pattern, use it as custom pattern
-                    if pattern_mode == 'LLM' and game_template.get('llm_designed_pattern'):
-                        designer_config['patternMode'] = 'Custom'
-                        designer_config['customPattern'] = game_template['llm_designed_pattern']
-                    elif pattern_mode == 'Custom' and game_template.get('custom_pattern'):
-                        designer_config['customPattern'] = game_template['custom_pattern']
-                    elif pattern_mode == 'Visual':
-                        designer_config['symmetryType'] = game_template.get('symmetry_type', 'Left-Right')
-                    elif pattern_mode == 'Algorithmic':
-                        designer_config['shiftStep'] = game_template.get('shift_step', 1)
-
+                    # 使用自定义模式或随机模式
                     game_config = {
                         'baseSettings': {
                             'gridSize': game_template['grid_size'],
                             'numSymbols': game_template['num_symbols'],
                         },
-                        'designer': designer_config,
+                        'designer': {
+                            'type': 'Human',
+                            'patternMode': 'Custom' if game_template.get('custom_pattern') else 'Random',
+                            'customPattern': game_template.get('custom_pattern'),
+                        },
                         'players': [
                             {
                                 'id': f'player-{i}',
@@ -617,68 +604,6 @@ class BackgroundTasksManager:
             logger.error(f"保存游戏结果失败: {e}")
 
 
-# --- Helper Functions ---
-
-def analyze_action_log(action_log: Optional[List[str]]) -> tuple[int, int, int]:
-    """
-    分析action_log，提取观察次数、观察轮数和是否退出
-
-    Returns:
-        tuple: (observation_count, observation_rounds, did_quit)
-    """
-    if not action_log:
-        return 0, 0, 0
-
-    observation_count = 0
-    observation_rounds = 0
-    did_quit = 0
-
-    for log_entry in action_log:
-        # 检查是否包含观察行为
-        if "Observed cells:" in log_entry:
-            observation_rounds += 1
-            # 提取观察的单元格数量
-            # 格式: "Turn X: Observed cells: A1, B2, C3. ..."
-            try:
-                cells_part = log_entry.split("Observed cells:")[1].split(".")[0]
-                cells = [c.strip() for c in cells_part.split(",") if c.strip()]
-                observation_count += len(cells)
-            except:
-                pass
-
-        # 检查是否退出游戏
-        if "Gave up the game" in log_entry or "give_up" in log_entry.lower():
-            did_quit = 1
-
-    return observation_count, observation_rounds, did_quit
-
-
-def calculate_ranks(scores: List[tuple[str, int]]) -> dict[str, int]:
-    """
-    根据分数计算排名（分数高的排名靠前，相同分数排名相同）
-
-    Args:
-        scores: List of (participant_id, score) tuples
-
-    Returns:
-        dict: {participant_id: rank}
-    """
-    # 按分数降序排序
-    sorted_scores = sorted(scores, key=lambda x: x[1], reverse=True)
-
-    ranks = {}
-    current_rank = 1
-    prev_score = None
-
-    for i, (participant_id, score) in enumerate(sorted_scores):
-        if prev_score is not None and score < prev_score:
-            current_rank = i + 1
-        ranks[participant_id] = current_rank
-        prev_score = score
-
-    return ranks
-
-
 def calculate_score(master_pattern: List[List[str]], guess: List[List[str]],
                     queried_cells: List[Dict[str, int]], grid_size: int) -> int:
     """计算玩家分数"""
@@ -698,113 +623,6 @@ def calculate_score(master_pattern: List[List[str]], guess: List[List[str]],
                         score -= 1
 
     return score
-
-
-def designer_percentile(scores: List[float], grid_size: Tuple[int, int],
-                        a: float = 7.0, b: float = 3.0, m0: float = 0.40,
-                        s0: float = 0.30, sigma_ref: float = 4.0) -> float:
-    """
-    Calculate designer percentile based on player scores
-
-    Args:
-        scores: List of player scores
-        grid_size: (height, width) of the grid
-        a, b: Difficulty and discrimination weights
-        m0, s0: Target mean and std thresholds
-        sigma_ref: Reference sigma for competitiveness compression
-
-    Returns:
-        p_prime: Designer percentile (0 to 1)
-    """
-    H, W = grid_size
-    Smax = H * W
-    scores_array = np.asarray(scores, dtype=float)
-    mu, sigma = scores_array.mean(), scores_array.std()
-
-    # Normalize mean and std
-    m = mu / Smax
-    s = min(sigma, Smax / 2) / (Smax / 2)
-
-    # Step A: Difficulty & Discrimination
-    z = a * (m0 - m) + b * (s - s0)
-    p = 1.0 / (1.0 + np.exp(-z))
-
-    # Step B: Competitiveness Compression
-    kappa = min(1.0, sigma / sigma_ref)
-    p_prime = 0.5 + kappa * (p - 0.5)
-
-    return float(p_prime)
-
-
-def designer_in_game_score(scores: List[float], p_prime: float,
-                           bump_top: bool = False, eps: float = 1e-6) -> float:
-    """
-    Calculate in-game designer score that can be ranked with player scores
-
-    Args:
-        scores: List of player scores
-        p_prime: Designer percentile
-        bump_top: If True, add epsilon when at top percentile
-        eps: Small value to add when bumping top
-
-    Returns:
-        Designer score that can be compared with player scores
-    """
-    scores_array = np.sort(np.asarray(scores, dtype=float))
-    n = len(scores_array)
-    pis = (np.arange(1, n + 1) - 0.5) / n
-    val = float(np.interp(p_prime, pis, scores_array))
-
-    if bump_top and p_prime >= pis[-1]:
-        val = scores_array[-1] + eps
-
-    return val
-
-
-def designer_meta_score(p_prime: float, grid_size: Tuple[int, int]) -> float:
-    """
-    Calculate meta designer score for cross-game comparison
-
-    Args:
-        p_prime: Designer percentile
-        grid_size: (height, width) of the grid
-
-    Returns:
-        Meta score in range [0, Smax]
-    """
-    H, W = grid_size
-    return (H * W) * p_prime
-
-
-def calculate_designer_scores(player_scores: List[float], grid_size: int,
-                              num_symbols: int) -> Tuple[float, float]:
-    """
-    Calculate both in-game and meta designer scores using the new algorithm
-
-    Args:
-        player_scores: List of player scores
-        grid_size: Grid size (assuming square grid)
-        num_symbols: Number of symbols (not used in calculation but kept for compatibility)
-
-    Returns:
-        (in_game_designer_score, meta_designer_score)
-    """
-    if not player_scores or len(player_scores) < 1:
-        return 0.0, 0.0
-
-    # Assume square grid for now (can be extended to rectangular)
-    grid_tuple = (grid_size, grid_size)
-
-    # Calculate percentile
-    p_prime = designer_percentile(player_scores, grid_tuple)
-
-    # Calculate in-game score (for ranking)
-    in_game_score = designer_in_game_score(player_scores, p_prime, bump_top=True)
-
-    # Calculate meta score (for cross-game comparison)
-    meta_score = designer_meta_score(p_prime, grid_tuple)
-
-    return in_game_score, meta_score
 
 
 # --- 全局异常处理器 ---
@@ -918,22 +736,21 @@ async def initialize_openai_models_cache():
 
 
 async def create_tables_if_not_exist():
-    """创建数据库表（如果不存在）"""
+    """自动创建数据库表（如果不存在）"""
     if not db_pool:
-        logger.warning("数据库连接池未初始化，跳过表创建")
         return
 
     try:
         async with db_pool.acquire() as conn:
-            # Check if games table exists
+            # 检查表是否存在
             result = await conn.fetchval(
                 "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'games')"
             )
 
             if not result:
-                logger.info("创建数据库表...")
+                logger.info("数据库表不存在，正在创建...")
 
-                # Create games table
+                # 创建 games 表
                 await conn.execute("""
                                    CREATE TABLE games
                                    (
@@ -951,7 +768,7 @@ async def create_tables_if_not_exist():
                                    )
                                    """)
 
-                # Create game_players table
+                # 创建 game_players 表
                 await conn.execute("""
                                    CREATE TABLE game_players
                                    (
@@ -970,95 +787,68 @@ async def create_tables_if_not_exist():
                                    )
                                    """)
 
-                logger.info("基础表创建成功")
-
-            # Check if game_analytics table exists
-            analytics_exists = await conn.fetchval(
-                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'game_analytics')"
-            )
-
-            if not analytics_exists:
-                logger.info("创建 game_analytics 表...")
+                # 创建 test_sets 表 - 修改默认状态为 'created'
                 await conn.execute("""
-                                   CREATE TABLE game_analytics
+                                   CREATE TABLE IF NOT EXISTS test_sets
                                    (
-                                       id                           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                                       game_id                      UUID    NOT NULL REFERENCES games (id) ON DELETE CASCADE,
-                                       grid_size                    INTEGER NOT NULL,
-                                       num_symbols                  INTEGER NOT NULL,
-                                       test_set_id                  TEXT,
-
-                                       participant_role             TEXT    NOT NULL CHECK (participant_role IN ('designer', 'player')),
-                                       participant_id               TEXT    NOT NULL,
-                                       participant_name             TEXT    NOT NULL,
-                                       participant_type             TEXT    NOT NULL,
-                                       participant_llm_model        TEXT,
-                                       participant_llm_model_params JSONB,
-
-                                       final_score                  INTEGER NOT NULL,
-                                       in_game_designer_score       DECIMAL(10, 2)   DEFAULT 0.0,
-                                       meta_designer_score          DECIMAL(10, 2)   DEFAULT 0.0,
-                                       rank_in_game                 INTEGER NOT NULL,
-                                       rank_in_game_incl_designer   INTEGER NOT NULL,
-
-                                       observation_count            INTEGER          DEFAULT 0,
-                                       observation_rounds           INTEGER          DEFAULT 0,
-                                       did_quit                     INTEGER          DEFAULT 0 CHECK (did_quit IN (0, 1)),
-
-                                       final_guess                  JSONB,
-                                       action_log                   JSONB,
-                                       queried_cells                JSONB,
-                                       master_pattern               JSONB   NOT NULL,
-
-                                       input_tokens                 INTEGER          DEFAULT 0,
-                                       output_tokens                INTEGER          DEFAULT 0,
-
-                                       created_at                   TIMESTAMPTZ      DEFAULT NOW()
+                                       id
+                                       TEXT
+                                       PRIMARY
+                                       KEY,
+                                       name
+                                       TEXT
+                                       NOT
+                                       NULL,
+                                       description
+                                       TEXT,
+                                       config
+                                       JSONB
+                                       NOT
+                                       NULL,
+                                       status
+                                       TEXT
+                                       DEFAULT
+                                       'created',
+                                       total_games
+                                       INTEGER
+                                       DEFAULT
+                                       0,
+                                       completed_games
+                                       INTEGER
+                                       DEFAULT
+                                       0,
+                                       created_at
+                                       TIMESTAMPTZ
+                                       DEFAULT
+                                       NOW
+                                   (
                                    )
+                                       )
                                    """)
 
-                # Create indexes
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_analytics_game_id ON game_analytics(game_id)")
+                # 创建索引
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_players_game_id ON game_players(game_id)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_created_at ON games(created_at DESC)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_test_set_id ON games(test_set_id)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_created_at ON test_sets(created_at DESC)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_status ON test_sets(status)")
                 await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_participant_id ON game_analytics(participant_id)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_role ON game_analytics(participant_role)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_model ON game_analytics(participant_llm_model)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_test_set ON game_analytics(test_set_id)")
-                await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_game_analytics_created_at ON game_analytics(created_at DESC)")
+                    "CREATE INDEX IF NOT EXISTS idx_game_players_tokens ON game_players(input_tokens, output_tokens)")
 
-                logger.info("game_analytics 表创建成功")
+                logger.info("数据库表创建成功！")
             else:
-                # Check if in_game_designer_score column exists
-                column_exists = await conn.fetchval("""
-                                                    SELECT EXISTS (SELECT
-                                                                   FROM information_schema.columns
-                                                                   WHERE table_name = 'game_analytics'
-                                                                     AND column_name = 'in_game_designer_score')
-                                                    """)
-
-                if not column_exists:
-                    logger.info("添加 in_game_designer_score 和 meta_designer_score 列到 game_analytics 表...")
-                    await conn.execute("""
-                                       ALTER TABLE game_analytics
-                                           ADD COLUMN in_game_designer_score DECIMAL(10, 2) DEFAULT 0.0,
-                                           ADD COLUMN meta_designer_score    DECIMAL(10, 2) DEFAULT 0.0
-                                       """)
-                    logger.info("新设计师分数列添加成功")
-
-            # Ensure indexes exist (idempotent)
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_players_game_id ON game_players(game_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_created_at ON games(created_at DESC)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_games_test_set_id ON games(test_set_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_created_at ON test_sets(created_at DESC)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_test_sets_status ON test_sets(status)")
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_game_players_tokens ON game_players(input_tokens, output_tokens)")
-
-            logger.info("数据库表已存在或已更新")
+                logger.info("数据库表已存在")
+                # 检查并添加token列（如果不存在）
+                try:
+                    await conn.execute(
+                        "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0")
+                    await conn.execute(
+                        "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0")
+                    await conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_game_players_tokens ON game_players(input_tokens, output_tokens)")
+                    logger.info("Token列已添加到game_players表")
+                except Exception as e:
+                    logger.info(f"Token列可能已存在: {e}")
 
     except Exception as e:
         logger.error(f"创建数据库表失败: {e}")
@@ -1184,9 +974,6 @@ class LLMPlayerTurnResponse(BaseModel):
     guessGrid: Optional[Grid] = None
     reasoning: str = ""
     confidence: Optional[float] = None
-    # 添加token使用量信息
-    input_tokens: Optional[int] = 0
-    output_tokens: Optional[int] = 0
 
 
 # API请求/响应模型
@@ -1266,8 +1053,6 @@ class GameDetailResponse(BaseModel):
     master_pattern: List[List[str]]
     game_config_dump: Dict[str, Any]
     players: List[GamePlayerDetailResponse]
-    in_game_designer_score: Optional[float] = None
-    meta_designer_score: Optional[float] = None
 
 
 # 新增：测试集相关模型
@@ -1284,13 +1069,6 @@ class TestSetGameConfig(BaseModel):
     optional_prompt: Optional[str] = None
     custom_pattern: Optional[List[List[str]]] = None
     repeat_count: int = Field(default=1, ge=1, le=10)
-    pattern_mode: Optional[str] = None  # "Visual", "Algorithmic", "Custom", "Random", "LLM"
-    symmetry_type: Optional[str] = None  # For Visual mode
-    shift_step: Optional[int] = None  # For Algorithmic mode
-    llm_pattern_model: Optional[str] = None  # LLM model for pattern generation
-    llm_pattern_model_params: Optional[LLMModelParams] = None  # LLM model parameters
-    llm_pattern_prompt: Optional[str] = None  # Custom prompt for LLM pattern generation
-    llm_designed_pattern: Optional[List[List[str]]] = None  # The actual LLM-generated pattern
 
 
 class TestSetCreateRequest(BaseModel):
@@ -1333,18 +1111,12 @@ class LeaderboardEntry(BaseModel):
     games_as_designer: int
     avg_score_as_player: float
     avg_score_as_designer: float
-    avg_in_game_designer_score: float = 0.0
-    avg_meta_designer_score: float = 0.0
     win_rate_as_player: float
     win_rate_as_designer: float
-    wins_as_player: int = 0
-    wins_as_designer: int = 0
-    inter_designer_win_rate: float = 0.0  # Added inter-designer win rate field
-    inter_designer_wins: int = 0  # Added inter-designer wins field
     total_games: int
-    overall_win_rate: float = 0.0
-    overall_wins: int = 0
-    cost_per_game: float = 0.0
+    overall_win_rate: float = 0.0  # 添加默认值
+    overall_wins: int = 0  # 添加默认值
+    cost_per_game: float = 0.0  # 添加成本字段
     total_cost: float = 0.0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -1392,7 +1164,7 @@ def append_message(game_id: str, player_id: str, role: str, content: str):
     key = get_chat_history_key(game_id, player_id)
     with chat_histories_lock:
         chat_histories[key].append({"role": role, "content": content})
-        # 限制消息历史长度，避免token মারাত্মক
+        # 限制消息历史长度，避免token过多
         if len(chat_histories[key]) > 50:  # 保留最近50条消息
             # 保留系统消息和最近的对话
             system_messages = [msg for msg in chat_histories[key] if msg["role"] == "system"]
@@ -1504,7 +1276,7 @@ def build_openrouter_params(model_params: Optional[LLMModelParams]) -> Dict[str,
         if model_params.frequencyPenalty is not None:
             params["frequency_penalty"] = model_params.frequencyPenalty
         if model_params.presencePenalty is not None:
-            params["presence_penalty"] = model_params.presence_penalty
+            params["presence_penalty"] = model_params.presencePenalty
 
     # 设置默认值
     if "temperature" not in params:
@@ -1529,7 +1301,7 @@ def build_openai_params(model_params: Optional[LLMModelParams], model_name: str 
         if model_params.frequencyPenalty is not None:
             params["frequency_penalty"] = model_params.frequencyPenalty
         if model_params.presencePenalty is not None:
-            params["presence_penalty"] = model_params.presence_penalty
+            params["presence_penalty"] = model_params.presencePenalty
 
     # 设置默认值
     if "temperature" not in params:
@@ -1615,7 +1387,7 @@ Your previous response was:
 
 Please correct the error and provide a valid response. Make sure to:
 1. Follow the exact JSON format required
-2. Use only the provided symbols: {symbols_str}
+2. Use only valid symbols from: {symbols_str}
 3. Ensure all coordinates are within bounds (0 to {grid_size - 1})
 4. Use 0-based indexing: row 0-{grid_size - 1}, col 0-{grid_size - 1}
 5. If guessing, provide a complete {grid_size}×{grid_size} grid
@@ -1679,6 +1451,12 @@ REQUIRED JSON FORMAT:
   "description": "Brief explanation of the pattern logic"
 }}
 
+Please provide a corr
+    ...
+  ],
+  "description": "Brief explanation of the pattern logic"
+}}
+
 Please provide a corrected response:"""
 
     return prompt
@@ -1731,7 +1509,7 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
                         raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
 
                     # 构建OpenAI API参数
-                    api_params = build_openai_params(request.llmModelParams, request.llmModel)
+                    api_params = build_openai_params(request.llmModelParams)
 
                     # 移除 openai_official/ 前缀获取真实模型名
                     clean_model_name = request.llmModel.replace("openai_official/", "")
@@ -1777,8 +1555,6 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
                         usage = response_json['usage']
                         input_tokens = usage.get('prompt_tokens', 0)
                         output_tokens = usage.get('completion_tokens', 0)
-                    else:
-                        logger.warning(f"OpenRouter API 响应中缺少 'usage' 字段，模型: {request.llmModel}")
 
                     # 转换为类似OpenAI的响应格式
                     class MockResponse:
@@ -1838,7 +1614,7 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
     raise Exception(f"Unexpected error in retry logic")
 
 
-async def design_pattern_logic_with_retry(request: DesignPatternRequest, max_retries: int = 10) -> DesignPatternResponse:
+async def design_pattern_logic_with_retry(request: DesignPatternRequest, max_retries: int = 5) -> DesignPatternResponse:
     """带重试机制的设计模式逻辑"""
     last_error = None
     last_response = None
@@ -2224,7 +2000,7 @@ DESIGN GOALS:
 5. Feel free to use your creativity, as long as the logic is consistent.
 
 RESPONSE FORMAT (IMPORTANT):
-You must return a valid JSON object with the this **exact structure**:
+You must return a valid JSON object with this **exact structure**:
 {{
   "pattern": [
     ["", "", ...],
@@ -2335,7 +2111,7 @@ async def design_pattern_logic(request: DesignPatternRequest) -> DesignPatternRe
 
 
 async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
-    """保存游戏逻辑的核心实现"""
+    """保存游戏逻辑 - 从端点中提取出来供后台任务使用"""
     if not db_pool:
         raise Exception("Database not connected")
 
@@ -2358,56 +2134,8 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
             json.dumps(request.master_pattern), json.dumps(request.game_config_dump), request.test_set_id
         )
 
-        # First, collect all player scores for player-only ranking
-        player_scores = []
         for player in request.players:
-            # Create a unique ID for player including model and params
-            player_params_dict = player.player_llm_model_params.dict(
-                exclude_none=True) if player.player_llm_model_params else {}
-            player_id = f"{player.player_llm_model or 'unknown_model'}#{json.dumps(player_params_dict)}"
-            player_scores.append((player_id, player.final_score or 0))
-
-        # Calculate ranks for players only
-        player_ranks = calculate_ranks(player_scores)
-
-        # Calculate designer scores using the new algorithm
-        player_score_values = [score for _, score in player_scores]
-        in_game_designer_score, meta_designer_score = calculate_designer_scores(
-            player_score_values,
-            request.grid_size,
-            request.num_symbols
-        )
-
-        logger.info(
-            f"游戏 {game_id}: 设计师分数计算 - In-game: {in_game_designer_score:.2f}, Meta: {meta_designer_score:.2f}")
-
-        # Collect all participant scores (players + designer) for overall ranking
-        # Use in_game_designer_score for ranking instead of old designer_score
-        all_participant_scores = player_scores.copy()
-        designer_input_tokens = 0
-        designer_output_tokens = 0
-        designer_id = None
-
-        if request.designer_type == "LLM" and request.designer_llm_model:
-            designer_params_dict = request.designer_llm_model_params.dict(
-                exclude_none=True) if request.designer_llm_model_params else {}
-            designer_id = f"{request.designer_llm_model}#{json.dumps(designer_params_dict)}"
-            all_participant_scores.append((designer_id, in_game_designer_score))
-
-        all_ranks = calculate_ranks(all_participant_scores)
-
-        for player in request.players:
-            # Safety check for player_llm_model_params
-            player_params_dict = player.player_llm_model_params.dict(
-                exclude_none=True) if player.player_llm_model_params else {}
-            player_id = f"{player.player_llm_model or 'unknown_model'}#{json.dumps(player_params_dict)}"
-
-            # Get player rank (players only)
-            player_rank = player_ranks.get(player_id, len(player_scores))
-
-            player_rank_incl_designer = all_ranks.get(player_id, len(all_participant_scores))
-
-            # Safety check for queried_cells
+            # 安全地处理 queried_cells
             queried_cells_json = None
             if player.queried_cells:
                 try:
@@ -2416,89 +2144,31 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
                     logger.warning(f"Failed to serialize queried_cells for player {player.player_name_in_game}: {e}")
                     queried_cells_json = None
 
-            # Serialize player model params
+            # 序列化玩家模型参数
             player_params_json = None
             if player.player_llm_model_params:
                 player_params_json = json.dumps(player.player_llm_model_params.dict(exclude_none=True))
 
-            # Use provided token data
+            # 确保token数据不为None - 修复版本，使用实际传入的token数据
             input_tokens = player.input_tokens or 0
             output_tokens = player.output_tokens or 0
 
             logger.info(f"保存玩家 {player.player_name_in_game} token数据: 输入 {input_tokens}, 输出 {output_tokens}")
+
             await conn.execute(
                 """
                 INSERT INTO game_players (game_id, player_name_in_game, player_type, player_llm_model,
-                                          player_llm_model_params,
-                                          final_score, final_guess, action_log, queried_cells, input_tokens,
-                                          output_tokens)
+                                          player_llm_model_params, final_score, final_guess, action_log, queried_cells,
+                                          input_tokens, output_tokens)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """,
-                game_id, player.player_name_in_game, player.player_type, player.player_llm_model, player_params_json,
-                player.final_score,
+                game_id, player.player_name_in_game, player.player_type,
+                player.player_llm_model, player_params_json, player.final_score,
                 json.dumps(player.final_guess) if player.final_guess else None,
                 json.dumps(player.action_log) if player.action_log else None,
                 queried_cells_json,
-                input_tokens, output_tokens
-            )
-
-            await conn.execute(
-                """
-                INSERT INTO game_analytics (game_id, grid_size, num_symbols, test_set_id,
-                                            participant_role, participant_id, participant_name, participant_type,
-                                            participant_llm_model, participant_llm_model_params,
-                                            final_score, in_game_designer_score, meta_designer_score,
-                                            rank_in_game, rank_in_game_incl_designer,
-                                            observation_count, observation_rounds, did_quit,
-                                            final_guess, action_log, queried_cells, master_pattern,
-                                            input_tokens, output_tokens)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                        $22, $23, $24)
-                """,
-                game_id, request.grid_size, request.num_symbols, request.test_set_id,
-                'player', player_id, player.player_name_in_game, player.player_type,
-                player.player_llm_model, player_params_json,
-                player.final_score, 0.0, 0.0,  # Players don't have designer scores
-                player_rank, player_rank_incl_designer,
-                analyze_action_log(player.action_log)[0], analyze_action_log(player.action_log)[1],
-                analyze_action_log(player.action_log)[2],
-                json.dumps(player.final_guess) if player.final_guess else None,
-                json.dumps(player.action_log) if player.action_log else None,
-                queried_cells_json,
-                json.dumps(request.master_pattern),
-                input_tokens, output_tokens
-            )
-
-        if request.designer_type == "LLM" and request.designer_llm_model:
-            # Serialize designer model parameters
-            designer_params_json = None
-            if request.designer_llm_model_params:
-                designer_params_json = json.dumps(request.designer_llm_model_params.dict(exclude_none=True))
-
-            designer_rank_incl_designer = all_ranks.get(designer_id, len(all_participant_scores))
-
-            await conn.execute(
-                """
-                INSERT INTO game_analytics (game_id, grid_size, num_symbols, test_set_id,
-                                            participant_role, participant_id, participant_name, participant_type,
-                                            participant_llm_model, participant_llm_model_params,
-                                            final_score, in_game_designer_score, meta_designer_score,
-                                            rank_in_game, rank_in_game_incl_designer,
-                                            observation_count, observation_rounds, did_quit,
-                                            final_guess, action_log, queried_cells, master_pattern,
-                                            input_tokens, output_tokens)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                        $22, $23, $24)
-                """,
-                game_id, request.grid_size, request.num_symbols, request.test_set_id,
-                'designer', designer_id, 'Designer', request.designer_type,
-                request.designer_llm_model, designer_params_json,
-                int(in_game_designer_score), in_game_designer_score, meta_designer_score,
-                0, designer_rank_incl_designer,
-                0, 0, 0,
-                None, None, None,
-                json.dumps(request.master_pattern),
-                designer_input_tokens, designer_output_tokens
+                input_tokens,
+                output_tokens
             )
 
         logger.info(f"Game saved successfully with ID: {game_id}")
@@ -2508,7 +2178,7 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
 # --- 获取模型列表的逻辑函数 ---
 
 async def get_available_models_logic() -> ModelsListResponse:
-    """获取可用的模型列表 - 合并OpenRouter和OpenAI官方模型"""
+    """获取可用的模型列表的核心逻辑 - 合并OpenRouter和OpenAI官方模型"""
     logger.info("正在获取模型列表...")
 
     all_models = []
@@ -2620,7 +2290,7 @@ async def get_available_models_logic() -> ModelsListResponse:
     )
 
 
-# --- API端点 ---
+# --- API端点实现 ---
 
 @app.get("/api/models", response_model=ModelsListResponse)
 @app.post("/api/models", response_model=ModelsListResponse)
@@ -2638,11 +2308,6 @@ async def llm_player_turn_endpoint(request: LLMPlayerTurnRequest):
     try:
         response, input_tokens, output_tokens = await llm_player_turn_logic_with_retry(request)
         logger.info(f"LLM玩家 {request.playerName} 使用了 {input_tokens} 输入token, {output_tokens} 输出token")
-
-        # 在响应中包含token信息
-        response.input_tokens = input_tokens
-        response.output_tokens = output_tokens
-
         return response
 
     except Exception as e:
@@ -2680,8 +2345,57 @@ async def design_pattern_endpoint(request: DesignPatternRequest):
 
 @app.post("/api/games", response_model=GameCreateResponse, status_code=201)
 async def save_game_endpoint(request: GameCreateRequest):
-    """保存完成的游戏数据"""
+    """保存完成的游戏数据 - 修复版本，从全局token跟踪器获取实际token数据"""
     try:
+        # 修复：从全局token跟踪器获取实际的token数据
+        for player in request.players:
+            # 尝试从全局token跟踪器获取token数据
+            # 我们需要找到对应的gameId，但这里我们没有直接的gameId
+            # 所以我们需要从game_config_dump中获取gameId或者使用其他方法
+
+            # 检查是否有gameId信息
+            game_config = request.game_config_dump
+            if isinstance(game_config, dict):
+                # 尝试从配置中找到gameId
+                game_id = None
+
+                # 查找可能的gameId字段
+                for key in ['gameId', 'id', 'game_id']:
+                    if key in game_config:
+                        game_id = game_config[key]
+                        break
+
+                # 如果找到了gameId，尝试获取token数据
+                if game_id:
+                    # 查找匹配的玩家ID
+                    player_id = None
+                    if 'players' in game_config:
+                        for game_player in game_config['players']:
+                            if (isinstance(game_player, dict) and
+                                    game_player.get('name') == player.player_name_in_game):
+                                player_id = game_player.get('id')
+                                break
+
+                    # 如果找到了玩家ID，获取token数据
+                    if player_id:
+                        try:
+                            actual_input_tokens, actual_output_tokens = get_player_token_usage(game_id, player_id)
+                            if actual_input_tokens > 0 or actual_output_tokens > 0:
+                                logger.info(
+                                    f"从全局跟踪器获取玩家 {player.player_name_in_game} 的token数据: 输入 {actual_input_tokens}, 输出 {actual_output_tokens}")
+                                player.input_tokens = actual_input_tokens
+                                player.output_tokens = actual_output_tokens
+                            else:
+                                logger.warning(f"全局跟踪器中玩家 {player.player_name_in_game} 的token数据为0")
+                        except Exception as e:
+                            logger.warning(f"获取玩家 {player.player_name_in_game} token数据失败: {e}")
+                    else:
+                        logger.warning(f"未找到玩家 {player.player_name_in_game} 的ID")
+                else:
+                    logger.warning("未找到gameId，无法获取token数据")
+            else:
+                logger.warning("game_config_dump格式不正确")
+
         return await save_game_logic(request)
     except Exception as e:
         logger.error(f"Failed to save game: {e}")
@@ -2731,7 +2445,7 @@ async def get_games_list_endpoint(limit: int = 50, offset: int = 0, test_set_id:
 
 @app.get("/api/games/{game_id}")
 async def get_game_details_endpoint(game_id: str):
-    """获取特定游戏的详细信息，包括计算的设计师分数"""
+    """获取特定游戏的详细信息"""
     if not db_pool:
         raise HTTPException(status_code=500, detail="Database not connected")
 
@@ -2745,8 +2459,6 @@ async def get_game_details_endpoint(game_id: str):
                                            game_id)
 
             players = []
-            player_scores = []
-
             for row in player_rows:
                 player_data = {
                     'player_name_in_game': row['player_name_in_game'],
@@ -2758,10 +2470,6 @@ async def get_game_details_endpoint(game_id: str):
                     'action_log': None,
                     'queried_cells': []
                 }
-
-                # 收集玩家分数用于计算设计师分数
-                if row['final_score'] is not None:
-                    player_scores.append(row['final_score'])
 
                 # 解析玩家模型参数
                 if row['player_llm_model_params']:
@@ -2794,15 +2502,6 @@ async def get_game_details_endpoint(game_id: str):
 
                 players.append(player_data)
 
-            # Calculate designer scores using the new algorithm
-            in_game_designer_score = None
-            meta_designer_score = None
-            if game_row['designer_type'] == 'LLM' and len(player_scores) > 0:
-                in_game_designer_score, meta_designer_score = calculate_designer_scores(
-                    player_scores, game_row['grid_size'], game_row['num_symbols']
-                )
-                designer_score = int(round(in_game_designer_score))  # Cast to int for score consistency
-
             # 解析设计师模型参数
             designer_model_params = None
             if game_row['designer_llm_model_params']:
@@ -2823,9 +2522,7 @@ async def get_game_details_endpoint(game_id: str):
                 'designer_pattern_mode': game_row['designer_pattern_mode'],
                 'master_pattern': json.loads(game_row['master_pattern']),
                 'game_config_dump': json.loads(game_row['game_config_dump']),
-                'players': players,
-                'in_game_designer_score': in_game_designer_score,
-                'meta_designer_score': meta_designer_score
+                'players': players
             }
 
             return game_data
@@ -2873,15 +2570,7 @@ async def create_test_set_endpoint(request: TestSetCreateRequest):
                     "num_symbols": g.num_symbols,
                     "optional_prompt": g.optional_prompt,
                     "custom_pattern": g.custom_pattern,
-                    "repeat_count": g.repeat_count,
-                    "pattern_mode": g.pattern_mode,
-                    "symmetry_type": g.symmetry_type,
-                    "shift_step": g.shift_step,
-                    "llm_pattern_model": g.llm_pattern_model,
-                    "llm_pattern_model_params": g.llm_pattern_model_params.dict(
-                        exclude_none=True) if g.llm_pattern_model_params else None,
-                    "llm_pattern_prompt": g.llm_pattern_prompt,
-                    "llm_designed_pattern": g.llm_designed_pattern,
+                    "repeat_count": g.repeat_count
                 }
                 for g in request.games
             ]
@@ -3039,38 +2728,13 @@ async def update_test_set_status_endpoint(test_set_id: str, request: TestSetStat
 
 
 @app.get("/api/leaderboard", response_model=LeaderboardResponse)
-async def get_leaderboard_endpoint(test_set_id: Optional[str] = None, force_recalculate: bool = False):
+async def get_leaderboard_endpoint(test_set_id: Optional[str] = None):
     """获取排行榜"""
     if not db_pool:
         raise HTTPException(status_code=500, detail="Database not connected")
 
     try:
         calculator = LeaderboardCalculator(db_pool)
-
-        # 首先尝试从缓存获取排行榜数据
-        if not force_recalculate:
-            cached_data = await calculator.get_cached_leaderboard(test_set_id)
-            if cached_data:
-                logger.info("使用缓存的排行榜数据")
-
-                test_set_name = None
-                if test_set_id:
-                    async with db_pool.acquire() as conn:
-                        test_set_row = await conn.fetchrow("SELECT name FROM test_sets WHERE id = $1", test_set_id)
-                        if test_set_row:
-                            test_set_name = test_set_row['name']
-
-                entries = [LeaderboardEntry(**entry) for entry in cached_data]
-
-                return LeaderboardResponse(
-                    test_set_id=test_set_id,
-                    test_set_name=test_set_name,
-                    entries=entries,
-                    generated_at=datetime.now()
-                )
-
-        # 如果没有缓存或强制重新计算，则计算新的排行榜
-        logger.info(f"计算新的排行榜数据，force_recalculate={force_recalculate}")
         leaderboard_data = await calculator.calculate_leaderboard(test_set_id)
 
         test_set_name = None

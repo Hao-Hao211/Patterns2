@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 import threading
 from collections import defaultdict
 import openai
-import numpy as np
 
 # 导入排行榜模块
 try:
@@ -273,30 +272,17 @@ class BackgroundTasksManager:
                         }
                         game_configs.append(game_config)
                 else:
-                    # Check if there's an LLM-designed pattern
-                    pattern_mode = game_template.get('pattern_mode', 'Random')
-                    designer_config = {
-                        'type': 'Human',
-                        'patternMode': pattern_mode,
-                    }
-
-                    # If LLM mode with a designed pattern, use it as custom pattern
-                    if pattern_mode == 'LLM' and game_template.get('llm_designed_pattern'):
-                        designer_config['patternMode'] = 'Custom'
-                        designer_config['customPattern'] = game_template['llm_designed_pattern']
-                    elif pattern_mode == 'Custom' and game_template.get('custom_pattern'):
-                        designer_config['customPattern'] = game_template['custom_pattern']
-                    elif pattern_mode == 'Visual':
-                        designer_config['symmetryType'] = game_template.get('symmetry_type', 'Left-Right')
-                    elif pattern_mode == 'Algorithmic':
-                        designer_config['shiftStep'] = game_template.get('shift_step', 1)
-
+                    # 使用自定义模式或随机模式
                     game_config = {
                         'baseSettings': {
                             'gridSize': game_template['grid_size'],
                             'numSymbols': game_template['num_symbols'],
                         },
-                        'designer': designer_config,
+                        'designer': {
+                            'type': 'Human',
+                            'patternMode': 'Custom' if game_template.get('custom_pattern') else 'Random',
+                            'customPattern': game_template.get('custom_pattern'),
+                        },
                         'players': [
                             {
                                 'id': f'player-{i}',
@@ -700,111 +686,24 @@ def calculate_score(master_pattern: List[List[str]], guess: List[List[str]],
     return score
 
 
-def designer_percentile(scores: List[float], grid_size: Tuple[int, int],
-                        a: float = 7.0, b: float = 3.0, m0: float = 0.40,
-                        s0: float = 0.30, sigma_ref: float = 4.0) -> float:
+def calculate_designer_score(player_scores: List[int]) -> int:
     """
-    Calculate designer percentile based on player scores
-
-    Args:
-        scores: List of player scores
-        grid_size: (height, width) of the grid
-        a, b: Difficulty and discrimination weights
-        m0, s0: Target mean and std thresholds
-        sigma_ref: Reference sigma for competitiveness compression
-
-    Returns:
-        p_prime: Designer percentile (0 to 1)
-    """
-    H, W = grid_size
-    Smax = H * W
-    scores_array = np.asarray(scores, dtype=float)
-    mu, sigma = scores_array.mean(), scores_array.std()
-
-    # Normalize mean and std
-    m = mu / Smax
-    s = min(sigma, Smax / 2) / (Smax / 2)
-
-    # Step A: Difficulty & Discrimination
-    z = a * (m0 - m) + b * (s - s0)
-    p = 1.0 / (1.0 + np.exp(-z))
-
-    # Step B: Competitiveness Compression
-    kappa = min(1.0, sigma / sigma_ref)
-    p_prime = 0.5 + kappa * (p - 0.5)
-
-    return float(p_prime)
-
-
-def designer_in_game_score(scores: List[float], p_prime: float,
-                           bump_top: bool = False, eps: float = 1e-6) -> float:
-    """
-    Calculate in-game designer score that can be ranked with player scores
-
-    Args:
-        scores: List of player scores
-        p_prime: Designer percentile
-        bump_top: If True, add epsilon when at top percentile
-        eps: Small value to add when bumping top
-
-    Returns:
-        Designer score that can be compared with player scores
-    """
-    scores_array = np.sort(np.asarray(scores, dtype=float))
-    n = len(scores_array)
-    pis = (np.arange(1, n + 1) - 0.5) / n
-    val = float(np.interp(p_prime, pis, scores_array))
-
-    if bump_top and p_prime >= pis[-1]:
-        val = scores_array[-1] + eps
-
-    return val
-
-
-def designer_meta_score(p_prime: float, grid_size: Tuple[int, int]) -> float:
-    """
-    Calculate meta designer score for cross-game comparison
-
-    Args:
-        p_prime: Designer percentile
-        grid_size: (height, width) of the grid
-
-    Returns:
-        Meta score in range [0, Smax]
-    """
-    H, W = grid_size
-    return (H * W) * p_prime
-
-
-def calculate_designer_scores(player_scores: List[float], grid_size: int,
-                              num_symbols: int) -> Tuple[float, float]:
-    """
-    Calculate both in-game and meta designer scores using the new algorithm
-
-    Args:
-        player_scores: List of player scores
-        grid_size: Grid size (assuming square grid)
-        num_symbols: Number of symbols (not used in calculation but kept for compatibility)
-
-    Returns:
-        (in_game_designer_score, meta_designer_score)
+    计算设计师分数
+    使用新公式: designer_score = 2 * (clip(max_score, 0) - clip(min_score, 0))
     """
     if not player_scores or len(player_scores) < 1:
-        return 0.0, 0.0
+        return 0
 
-    # Assume square grid for now (can be extended to rectangular)
-    grid_tuple = (grid_size, grid_size)
+    max_score = max(player_scores)
+    min_score = min(player_scores)
 
-    # Calculate percentile
-    p_prime = designer_percentile(player_scores, grid_tuple)
+    # Clip scores at 0 and calculate designer score
+    clipped_max = max(max_score, 0)
+    clipped_min = max(min_score, 0)
 
-    # Calculate in-game score (for ranking)
-    in_game_score = designer_in_game_score(player_scores, p_prime, bump_top=True)
+    designer_score = 2 * (clipped_max - clipped_min)
 
-    # Calculate meta score (for cross-game comparison)
-    meta_score = designer_meta_score(p_prime, grid_tuple)
-
-    return in_game_score, meta_score
+    return designer_score
 
 
 # --- 全局异常处理器 ---
@@ -996,8 +895,6 @@ async def create_tables_if_not_exist():
                                        participant_llm_model_params JSONB,
 
                                        final_score                  INTEGER NOT NULL,
-                                       in_game_designer_score       DECIMAL(10, 2)   DEFAULT 0.0,
-                                       meta_designer_score          DECIMAL(10, 2)   DEFAULT 0.0,
                                        rank_in_game                 INTEGER NOT NULL,
                                        rank_in_game_incl_designer   INTEGER NOT NULL,
 
@@ -1032,22 +929,21 @@ async def create_tables_if_not_exist():
 
                 logger.info("game_analytics 表创建成功")
             else:
-                # Check if in_game_designer_score column exists
+                # Check if rank_in_game_incl_designer column exists
                 column_exists = await conn.fetchval("""
                                                     SELECT EXISTS (SELECT
                                                                    FROM information_schema.columns
                                                                    WHERE table_name = 'game_analytics'
-                                                                     AND column_name = 'in_game_designer_score')
+                                                                     AND column_name = 'rank_in_game_incl_designer')
                                                     """)
 
                 if not column_exists:
-                    logger.info("添加 in_game_designer_score 和 meta_designer_score 列到 game_analytics 表...")
+                    logger.info("添加 rank_in_game_incl_designer 列到 game_analytics 表...")
                     await conn.execute("""
                                        ALTER TABLE game_analytics
-                                           ADD COLUMN in_game_designer_score DECIMAL(10, 2) DEFAULT 0.0,
-                                           ADD COLUMN meta_designer_score    DECIMAL(10, 2) DEFAULT 0.0
+                                           ADD COLUMN rank_in_game_incl_designer INTEGER NOT NULL DEFAULT 1
                                        """)
-                    logger.info("新设计师分数列添加成功")
+                    logger.info("rank_in_game_incl_designer 列添加成功")
 
             # Ensure indexes exist (idempotent)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_game_players_game_id ON game_players(game_id)")
@@ -1266,8 +1162,7 @@ class GameDetailResponse(BaseModel):
     master_pattern: List[List[str]]
     game_config_dump: Dict[str, Any]
     players: List[GamePlayerDetailResponse]
-    in_game_designer_score: Optional[float] = None
-    meta_designer_score: Optional[float] = None
+    designer_score: Optional[int] = None  # Add designer_score field
 
 
 # 新增：测试集相关模型
@@ -1284,13 +1179,6 @@ class TestSetGameConfig(BaseModel):
     optional_prompt: Optional[str] = None
     custom_pattern: Optional[List[List[str]]] = None
     repeat_count: int = Field(default=1, ge=1, le=10)
-    pattern_mode: Optional[str] = None  # "Visual", "Algorithmic", "Custom", "Random", "LLM"
-    symmetry_type: Optional[str] = None  # For Visual mode
-    shift_step: Optional[int] = None  # For Algorithmic mode
-    llm_pattern_model: Optional[str] = None  # LLM model for pattern generation
-    llm_pattern_model_params: Optional[LLMModelParams] = None  # LLM model parameters
-    llm_pattern_prompt: Optional[str] = None  # Custom prompt for LLM pattern generation
-    llm_designed_pattern: Optional[List[List[str]]] = None  # The actual LLM-generated pattern
 
 
 class TestSetCreateRequest(BaseModel):
@@ -1333,8 +1221,6 @@ class LeaderboardEntry(BaseModel):
     games_as_designer: int
     avg_score_as_player: float
     avg_score_as_designer: float
-    avg_in_game_designer_score: float = 0.0
-    avg_meta_designer_score: float = 0.0
     win_rate_as_player: float
     win_rate_as_designer: float
     wins_as_player: int = 0
@@ -1504,7 +1390,7 @@ def build_openrouter_params(model_params: Optional[LLMModelParams]) -> Dict[str,
         if model_params.frequencyPenalty is not None:
             params["frequency_penalty"] = model_params.frequencyPenalty
         if model_params.presencePenalty is not None:
-            params["presence_penalty"] = model_params.presence_penalty
+            params["presence_penalty"] = model_params.presencePenalty
 
     # 设置默认值
     if "temperature" not in params:
@@ -1529,7 +1415,7 @@ def build_openai_params(model_params: Optional[LLMModelParams], model_name: str 
         if model_params.frequencyPenalty is not None:
             params["frequency_penalty"] = model_params.frequencyPenalty
         if model_params.presencePenalty is not None:
-            params["presence_penalty"] = model_params.presence_penalty
+            params["presence_penalty"] = model_params.presencePenalty
 
     # 设置默认值
     if "temperature" not in params:
@@ -1731,7 +1617,7 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
                         raise Exception("OpenAI API客户端未初始化，请检查OPENAI_API_KEY环境变量")
 
                     # 构建OpenAI API参数
-                    api_params = build_openai_params(request.llmModelParams, request.llmModel)
+                    api_params = build_openai_params(request.llmModelParams)
 
                     # 移除 openai_official/ 前缀获取真实模型名
                     clean_model_name = request.llmModel.replace("openai_official/", "")
@@ -1777,8 +1663,6 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
                         usage = response_json['usage']
                         input_tokens = usage.get('prompt_tokens', 0)
                         output_tokens = usage.get('completion_tokens', 0)
-                    else:
-                        logger.warning(f"OpenRouter API 响应中缺少 'usage' 字段，模型: {request.llmModel}")
 
                     # 转换为类似OpenAI的响应格式
                     class MockResponse:
@@ -1838,7 +1722,7 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
     raise Exception(f"Unexpected error in retry logic")
 
 
-async def design_pattern_logic_with_retry(request: DesignPatternRequest, max_retries: int = 10) -> DesignPatternResponse:
+async def design_pattern_logic_with_retry(request: DesignPatternRequest, max_retries: int = 5) -> DesignPatternResponse:
     """带重试机制的设计模式逻辑"""
     last_error = None
     last_response = None
@@ -2370,19 +2254,11 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
         # Calculate ranks for players only
         player_ranks = calculate_ranks(player_scores)
 
-        # Calculate designer scores using the new algorithm
+        # Calculate designer score using the correct formula
         player_score_values = [score for _, score in player_scores]
-        in_game_designer_score, meta_designer_score = calculate_designer_scores(
-            player_score_values,
-            request.grid_size,
-            request.num_symbols
-        )
-
-        logger.info(
-            f"游戏 {game_id}: 设计师分数计算 - In-game: {in_game_designer_score:.2f}, Meta: {meta_designer_score:.2f}")
+        designer_score = calculate_designer_score(player_score_values)
 
         # Collect all participant scores (players + designer) for overall ranking
-        # Use in_game_designer_score for ranking instead of old designer_score
         all_participant_scores = player_scores.copy()
         designer_input_tokens = 0
         designer_output_tokens = 0
@@ -2392,7 +2268,7 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
             designer_params_dict = request.designer_llm_model_params.dict(
                 exclude_none=True) if request.designer_llm_model_params else {}
             designer_id = f"{request.designer_llm_model}#{json.dumps(designer_params_dict)}"
-            all_participant_scores.append((designer_id, in_game_designer_score))
+            all_participant_scores.append((designer_id, designer_score))
 
         all_ranks = calculate_ranks(all_participant_scores)
 
@@ -2428,10 +2304,8 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
             logger.info(f"保存玩家 {player.player_name_in_game} token数据: 输入 {input_tokens}, 输出 {output_tokens}")
             await conn.execute(
                 """
-                INSERT INTO game_players (game_id, player_name_in_game, player_type, player_llm_model,
-                                          player_llm_model_params,
-                                          final_score, final_guess, action_log, queried_cells, input_tokens,
-                                          output_tokens)
+                INSERT INTO game_players (game_id, player_name_in_game, player_type, player_llm_model, player_llm_model_params,
+                                         final_score, final_guess, action_log, queried_cells, input_tokens, output_tokens)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """,
                 game_id, player.player_name_in_game, player.player_type, player.player_llm_model, player_params_json,
@@ -2447,19 +2321,17 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
                 INSERT INTO game_analytics (game_id, grid_size, num_symbols, test_set_id,
                                             participant_role, participant_id, participant_name, participant_type,
                                             participant_llm_model, participant_llm_model_params,
-                                            final_score, in_game_designer_score, meta_designer_score,
-                                            rank_in_game, rank_in_game_incl_designer,
+                                            final_score, rank_in_game, rank_in_game_incl_designer,
                                             observation_count, observation_rounds, did_quit,
                                             final_guess, action_log, queried_cells, master_pattern,
                                             input_tokens, output_tokens)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                        $22, $23, $24)
+                        $22)
                 """,
                 game_id, request.grid_size, request.num_symbols, request.test_set_id,
                 'player', player_id, player.player_name_in_game, player.player_type,
                 player.player_llm_model, player_params_json,
-                player.final_score, 0.0, 0.0,  # Players don't have designer scores
-                player_rank, player_rank_incl_designer,
+                player.final_score, player_rank, player_rank_incl_designer,
                 analyze_action_log(player.action_log)[0], analyze_action_log(player.action_log)[1],
                 analyze_action_log(player.action_log)[2],
                 json.dumps(player.final_guess) if player.final_guess else None,
@@ -2482,19 +2354,17 @@ async def save_game_logic(request: GameCreateRequest) -> GameCreateResponse:
                 INSERT INTO game_analytics (game_id, grid_size, num_symbols, test_set_id,
                                             participant_role, participant_id, participant_name, participant_type,
                                             participant_llm_model, participant_llm_model_params,
-                                            final_score, in_game_designer_score, meta_designer_score,
-                                            rank_in_game, rank_in_game_incl_designer,
+                                            final_score, rank_in_game, rank_in_game_incl_designer,
                                             observation_count, observation_rounds, did_quit,
                                             final_guess, action_log, queried_cells, master_pattern,
                                             input_tokens, output_tokens)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                        $22, $23, $24)
+                        $22)
                 """,
                 game_id, request.grid_size, request.num_symbols, request.test_set_id,
                 'designer', designer_id, 'Designer', request.designer_type,
                 request.designer_llm_model, designer_params_json,
-                int(in_game_designer_score), in_game_designer_score, meta_designer_score,
-                0, designer_rank_incl_designer,
+                designer_score, 0, designer_rank_incl_designer,
                 0, 0, 0,
                 None, None, None,
                 json.dumps(request.master_pattern),
@@ -2794,14 +2664,10 @@ async def get_game_details_endpoint(game_id: str):
 
                 players.append(player_data)
 
-            # Calculate designer scores using the new algorithm
-            in_game_designer_score = None
-            meta_designer_score = None
+            # 计算设计师分数（使用新公式）
+            designer_score = None
             if game_row['designer_type'] == 'LLM' and len(player_scores) > 0:
-                in_game_designer_score, meta_designer_score = calculate_designer_scores(
-                    player_scores, game_row['grid_size'], game_row['num_symbols']
-                )
-                designer_score = int(round(in_game_designer_score))  # Cast to int for score consistency
+                designer_score = calculate_designer_score(player_scores)
 
             # 解析设计师模型参数
             designer_model_params = None
@@ -2824,8 +2690,7 @@ async def get_game_details_endpoint(game_id: str):
                 'master_pattern': json.loads(game_row['master_pattern']),
                 'game_config_dump': json.loads(game_row['game_config_dump']),
                 'players': players,
-                'in_game_designer_score': in_game_designer_score,
-                'meta_designer_score': meta_designer_score
+                'designer_score': designer_score  # Add designer score to response
             }
 
             return game_data
@@ -2873,15 +2738,7 @@ async def create_test_set_endpoint(request: TestSetCreateRequest):
                     "num_symbols": g.num_symbols,
                     "optional_prompt": g.optional_prompt,
                     "custom_pattern": g.custom_pattern,
-                    "repeat_count": g.repeat_count,
-                    "pattern_mode": g.pattern_mode,
-                    "symmetry_type": g.symmetry_type,
-                    "shift_step": g.shift_step,
-                    "llm_pattern_model": g.llm_pattern_model,
-                    "llm_pattern_model_params": g.llm_pattern_model_params.dict(
-                        exclude_none=True) if g.llm_pattern_model_params else None,
-                    "llm_pattern_prompt": g.llm_pattern_prompt,
-                    "llm_designed_pattern": g.llm_designed_pattern,
+                    "repeat_count": g.repeat_count
                 }
                 for g in request.games
             ]

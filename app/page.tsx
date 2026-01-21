@@ -197,7 +197,7 @@ export default function GamePage() {
       num_symbols: fullGameConfig.baseSettings.numSymbols,
       designer_type: fullGameConfig.designer.type,
       designer_llm_model: fullGameConfig.designer.llmModel,
-      designer_llm_model_params: fullGameConfig.designer.llmModelParams, // 新增
+      designer_llm_model_params: fullGameConfig.designer.llmModelParams,
       designer_pattern_mode: fullGameConfig.designer.patternMode,
       master_pattern: masterPattern,
       game_config_dump: fullGameConfig,
@@ -208,7 +208,7 @@ export default function GamePage() {
           player_name_in_game: pConfig.name,
           player_type: pConfig.type,
           player_llm_model: pConfig.llmModel,
-          player_llm_model_params: pConfig.llmModelParams, // 新增
+          player_llm_model_params: pConfig.llmModelParams,
           final_score: pScore?.score ?? 0,
           final_guess: pState?.finalGuess,
           action_log: pState?.log,
@@ -217,6 +217,9 @@ export default function GamePage() {
               row: pos.row,
               col: pos.col,
             })) || [],
+          // 添加token数据
+          input_tokens: pState?.inputTokens || 0,
+          output_tokens: pState?.outputTokens || 0,
         }
       }),
     }
@@ -257,7 +260,7 @@ export default function GamePage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-black">
         <WelcomeScreen onStartSetup={handleStartSetup} />
-        <div className="flex gap-4 mt-8">
+        <div className="flex flex-col gap-3 mt-8">
           <Button variant="link" className="text-neutral-400 hover:text-neutral-200" asChild>
             <Link href="/history">
               <History className="mr-2 h-4 w-4" />
