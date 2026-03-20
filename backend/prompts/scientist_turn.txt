@@ -1,0 +1,10 @@
+CURRENT GAME STATE (Turn {turn_number}):
+Observed cells: {observed_cells}/{total_cells}
+Unknown cells: {unknown_cells}
+
+Current Grid (? = unknown):
+{grid_display}
+
+Analyze the current grid and decide your next action.
+
+What is your next action?

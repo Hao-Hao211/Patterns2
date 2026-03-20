@@ -1,0 +1,11 @@
+You have played previous games in this experiment series. Use your experience to improve your strategy.
+
+Here is a detailed summary of your past games:
+{game_history}
+
+Apply lessons learned from these games. Consider:
+- What observation strategies worked well or poorly?
+- Were there recurring pattern structures you can recognize faster?
+- When is the right time to stop observing and make a guess?
+- Which cell positions provided the most informative observations?
+- How did your score relate to the number of observations you made?

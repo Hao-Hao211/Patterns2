@@ -35,6 +35,7 @@ interface GameDetail {
   master_pattern: Grid
   game_config_dump: any
   players: GamePlayerDetail[]
+  designer_score: number | null
   in_game_designer_score: number | null
   meta_designer_score: number | null
 }
@@ -120,8 +121,7 @@ export default function GameDetailPage() {
 
   const symbolsInUse = ALL_SYMBOLS_DETAIL.slice(0, game.num_symbols)
 
-  const inGameDesignerScore = game.in_game_designer_score ?? 0
-  const metaDesignerScore = game.meta_designer_score ?? 0
+  const designerScore = game.designer_score ?? game.in_game_designer_score ?? 0
 
   return (
     <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-8">
@@ -202,11 +202,8 @@ export default function GameDetailPage() {
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-3xl font-bold text-blue-600">{inGameDesignerScore.toFixed(1)}</p>
-                        <p className="text-sm text-slate-600 font-medium">In-game Designer Score</p>
-                        <p className="text-sm text-purple-600 mt-1">
-                          (Meta Designer Score: {metaDesignerScore.toFixed(1)})
-                        </p>
+                        <p className="text-3xl font-bold text-blue-600">{designerScore.toFixed(1)}</p>
+                        <p className="text-sm text-slate-600 font-medium">Designer Score</p>
                       </div>
                     </div>
                   </div>

@@ -13,6 +13,8 @@ export interface LLMModelParams {
   topP?: number
   frequencyPenalty?: number
   presencePenalty?: number
+  reasoningEffort?: string // xhigh/high/medium/low/minimal/none
+  chatHistoryEnabled?: boolean // Multi-turn chat history, default false (single-turn)
 }
 
 export interface PlayerState {
@@ -98,6 +100,9 @@ export interface LeaderboardEntry {
   total_cost: number
   total_input_tokens: number
   total_output_tokens: number
+  total_score_as_player: number
+  theoretical_max_scientist_score: number
+  total_score_as_designer: number
 }
 
 export interface TestSet {
@@ -111,9 +116,19 @@ export interface TestSet {
   config?: any
 }
 
+export interface EvolvingConfig {
+  enabled: boolean
+  mode: 'fresh' | 'imported'
+  import_game_ids?: string[]
+  accumulate: boolean
+}
+
 export interface TestSetParticipant {
-  model_name: string
+  participant_type: 'Human' | 'LLM'
+  human_name?: string  // required for Human participants (unique nickname)
+  model_name?: string  // optional for Human participants
   model_params?: LLMModelParams
+  evolving_config?: EvolvingConfig
 }
 
 export interface TestSetGameConfig {

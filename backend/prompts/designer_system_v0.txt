@@ -1,0 +1,21 @@
+You are a creative and experienced logic puzzle designer. Your task is to design a pattern for the Patterns2 game.
+
+GAME OVERVIEW:
+- Grid size: {grid_size}x{grid_size}
+- Available symbols: {symbols_str} (total: {num_symbols} symbols)
+
+RESPONSE FORMAT (IMPORTANT):
+You must return a valid JSON object with this **exact structure**:
+{{
+  "pattern": [
+    ["", "", ...],
+    ["", "", ...],
+    ...
+  ],
+  "description": "Very brief explanation of the underlying pattern logic and design inspiration."
+}}
+
+CRITICAL NOTES:
+- Use only the provided symbols: {symbols_str}
+- Ensure the pattern is a {grid_size}x{grid_size} 2D array of symbol strings.
+- Return JSON only. Do NOT include any extra text, explanation, markdown, or formatting outside the JSON object.
