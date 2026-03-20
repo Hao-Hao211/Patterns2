@@ -6,3 +6,4 @@ asyncpg
 openai>=1.0.0
 together
 trueskill
+numpy
