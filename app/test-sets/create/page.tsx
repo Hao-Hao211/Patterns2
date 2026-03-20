@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useState, useEffect, useRef, useCallback, Suspense } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,6 +15,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Separator } from "@/components/ui/separator"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { CustomPatternEditor } from "@/components/custom-pattern-editor"
+import { GameHistorySelector } from "@/components/game-history-selector"
 import { GameBoard } from "@/components/game-board"
 import type { Grid, Symbol } from "@/types/game-types"
 import {
@@ -32,6 +33,9 @@ import {
   Loader2,
   AlertTriangle,
   Edit,
+  Copy,
+  ExternalLink,
+  Play,
 } from "lucide-react"
 
 interface LLMModelParams {
@@ -40,11 +44,23 @@ interface LLMModelParams {
   topP?: number
   frequencyPenalty?: number
   presencePenalty?: number
+  reasoningEffort?: string
+  chatHistoryEnabled?: boolean
+}
+
+interface EvolvingConfig {
+  enabled: boolean
+  mode: 'fresh' | 'imported'
+  import_game_ids?: string[]
+  accumulate: boolean
 }
 
 interface TestSetParticipant {
-  model_name: string
+  participant_type: 'Human' | 'LLM'
+  human_name?: string
+  model_name?: string
   model_params?: LLMModelParams
+  evolving_config?: EvolvingConfig
 }
 
 interface TestSetGameConfig {
@@ -53,7 +69,7 @@ interface TestSetGameConfig {
   optional_prompt?: string
   custom_pattern?: Grid
   repeat_count: number
-  pattern_mode?: "Visual" | "Algorithmic" | "Custom" | "Random" | "LLM" // Added "LLM" option
+  pattern_mode?: "Visual" | "Algorithmic" | "Custom" | "Random" | "LLM" | "LLM_Designer"
   symmetry_type?: "Left-Right" | "Top-Bottom" | "Both"
   shift_step?: number
   llm_pattern_model?: string
@@ -75,6 +91,7 @@ interface OpenAIModel {
   object: string
   created: number
   owned_by: string
+  supported_parameters?: string[]
 }
 
 interface ModelsListResponse {
@@ -82,12 +99,14 @@ interface ModelsListResponse {
   data: OpenAIModel[]
 }
 
-type SetupStep = "basic" | "settings" | "participants" | "games" | "customPatternEditor"
+type SetupStep = "basic" | "settings" | "participants" | "games" | "customPatternEditor" | "humanTest"
 
 const allSymbols: Symbol[] = ["+", "○", "△", "□", "★", "✖"]
 
-export default function CreateTestSetPage() {
+function CreateTestSetPageInner() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const cloneId = searchParams.get('clone')
   const [currentStep, setCurrentStep] = useState<SetupStep>("basic")
   const [editingGameIndex, setEditingGameIndex] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
@@ -95,15 +114,27 @@ export default function CreateTestSetPage() {
   const [availableModels, setAvailableModels] = useState<OpenAIModel[]>([])
   const [modelsLoading, setModelsLoading] = useState(true)
   const [modelsError, setModelsError] = useState<string | null>(null)
+  const [existingHumanNames, setExistingHumanNames] = useState<string[]>([])
 
   const [isLLMDesigning, setIsLLMDesigning] = useState<Record<number, boolean>>({})
   const [llmDesignErrors, setLlmDesignErrors] = useState<Record<number, string | null>>({})
+
+  // Human test step state
+  const [joinToken, setJoinToken] = useState<string | null>(null)
+  const [joinUrl, setJoinUrl] = useState<string | null>(null)
+  const [testSetId, setTestSetId] = useState<string | null>(null)
+  const [playerSlots, setPlayerSlots] = useState<any[]>([])
+  const [humanTestCreated, setHumanTestCreated] = useState(false)
+  const [humanTestCreating, setHumanTestCreating] = useState(false)
+  const [humanTestStarting, setHumanTestStarting] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Form data
   const [formData, setFormData] = useState<TestSetCreateRequest>({
     name: "",
     description: "",
-    participants: [{ model_name: "chatgpt-4o-latest" }],
+    participants: [{ participant_type: 'LLM' as const, model_name: "chatgpt-4o-latest" }],
     llm_rotate_designer: true,
     games: [
       {
@@ -114,8 +145,15 @@ export default function CreateTestSetPage() {
     ],
   })
 
-  const stepOrder: SetupStep[] = ["basic", "settings", "participants", "games"]
-  const stepTitles = ["Basic Info", "Settings", "Participants", "Games"]
+  const [enableHumanTest, setEnableHumanTest] = useState(false)
+  const isAllHuman = formData.participants.length > 0 &&
+    formData.participants.every(p => p.participant_type === 'Human')
+  const stepOrder: SetupStep[] = isAllHuman
+    ? ["basic", "settings", "participants", "games", "humanTest"]
+    : ["basic", "settings", "participants", "games"]
+  const stepTitles = isAllHuman
+    ? ["Basic Info", "Settings", "Participants", "Games", "Human Test"]
+    : ["Basic Info", "Settings", "Participants", "Games"]
 
   const getCurrentStepIndex = () => {
     if (currentStep === "customPatternEditor") return stepOrder.length
@@ -142,7 +180,9 @@ export default function CreateTestSetPage() {
           const defaultModel = data.data.find((m) => m.id === "chatgpt-4o-latest") || data.data[0]
           setFormData((prev) => ({
             ...prev,
-            participants: prev.participants.map((p) => ({ ...p, model_name: defaultModel.id })),
+            participants: prev.participants.map((p) =>
+              p.participant_type === 'LLM' ? { ...p, model_name: defaultModel.id } : p
+            ),
           }))
         }
       } catch (error) {
@@ -164,20 +204,92 @@ export default function CreateTestSetPage() {
     }
 
     fetchModels()
+
+    // Fetch existing human player names for uniqueness validation
+    const fetchHumanNames = async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/human-names`)
+        if (res.ok) {
+          const data = await res.json()
+          setExistingHumanNames(data.names || [])
+        }
+      } catch (err) {
+        console.error("Failed to fetch human names:", err)
+      }
+    }
+    fetchHumanNames()
   }, [])
+
+  // Clone: fetch source test set config and pre-populate form
+  useEffect(() => {
+    if (!cloneId || modelsLoading) return
+
+    const fetchCloneSource = async () => {
+      try {
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets/${cloneId}`
+        )
+        if (!response.ok) throw new Error('Failed to fetch test set')
+
+        const data = await response.json()
+        const config = data.config
+
+        setFormData({
+          name: `${data.name} (Copy)`,
+          description: data.description || '',
+          participants: (config.participants || []).map((p: any) => ({
+            participant_type: p.participant_type || 'LLM',
+            model_name: p.model_name,
+            model_params: p.model_params || undefined,
+            evolving_config: p.evolving_config || undefined,
+          })),
+          llm_rotate_designer: config.llm_rotate_designer ?? true,
+          games: (config.games || []).map((g: any) => ({
+            grid_size: g.grid_size ?? 6,
+            num_symbols: g.num_symbols ?? 5,
+            optional_prompt: g.optional_prompt,
+            custom_pattern: g.custom_pattern,
+            repeat_count: g.repeat_count ?? 1,
+            pattern_mode: g.pattern_mode,
+            symmetry_type: g.symmetry_type,
+            shift_step: g.shift_step,
+            llm_pattern_model: g.llm_pattern_model,
+            llm_pattern_model_params: g.llm_pattern_model_params,
+            llm_pattern_prompt: g.llm_pattern_prompt,
+            llm_designed_pattern: g.llm_designed_pattern,
+          })),
+        })
+      } catch (err) {
+        console.error('Failed to clone test set:', err)
+        setError('Failed to load test set for cloning')
+      }
+    }
+
+    fetchCloneSource()
+  }, [cloneId, modelsLoading])
+
+  // Auto-disable designer rotation for all-human test sets
+  useEffect(() => {
+    if (isAllHuman && formData.llm_rotate_designer) {
+      setFormData((prev) => ({ ...prev, llm_rotate_designer: false }))
+    }
+  }, [isAllHuman, formData.llm_rotate_designer])
 
   // Auto-adjust participants when designer rotation changes
   useEffect(() => {
-    if (formData.llm_rotate_designer && formData.participants.length < 3) {
-      const defaultModel = availableModels.length > 0 ? availableModels[0].id : "chatgpt-4o-latest"
-      const newParticipants = [...formData.participants]
-      while (newParticipants.length < 3) {
-        newParticipants.push({ model_name: defaultModel })
+    if (formData.llm_rotate_designer) {
+      const llmCount = formData.participants.filter(p => p.participant_type === 'LLM').length
+      if (llmCount < 3) {
+        const defaultModel = availableModels.length > 0 ? availableModels[0].id : "chatgpt-4o-latest"
+        const newParticipants = [...formData.participants]
+        while (newParticipants.filter(p => p.participant_type === 'LLM').length < 3) {
+          newParticipants.push({ participant_type: 'LLM', model_name: defaultModel })
+        }
+        setFormData((prev) => ({
+          ...prev,
+          participants: newParticipants,
+        }))
       }
-      setFormData((prev) => ({
-        ...prev,
-        participants: newParticipants,
-      }))
     }
   }, [formData.llm_rotate_designer, availableModels])
 
@@ -197,17 +309,23 @@ export default function CreateTestSetPage() {
     }
   }
 
-  const addParticipant = () => {
-    const defaultModel = availableModels.length > 0 ? availableModels[0].id : "chatgpt-4o-latest"
-    setFormData((prev) => ({
-      ...prev,
-      participants: [...prev.participants, { model_name: defaultModel }],
-    }))
+  const addParticipant = (type: 'Human' | 'LLM' = 'LLM') => {
+    if (type === 'Human') {
+      setFormData((prev) => ({
+        ...prev,
+        participants: [...prev.participants, { participant_type: 'Human', human_name: '' }],
+      }))
+    } else {
+      const defaultModel = availableModels.length > 0 ? availableModels[0].id : "chatgpt-4o-latest"
+      setFormData((prev) => ({
+        ...prev,
+        participants: [...prev.participants, { participant_type: 'LLM', model_name: defaultModel }],
+      }))
+    }
   }
 
   const removeParticipant = (index: number) => {
-    const minParticipants = formData.llm_rotate_designer ? 3 : 1
-    if (formData.participants.length > minParticipants) {
+    if (formData.participants.length > 1) {
       setFormData((prev) => ({
         ...prev,
         participants: prev.participants.filter((_, i) => i !== index),
@@ -222,7 +340,7 @@ export default function CreateTestSetPage() {
     }))
   }
 
-  const updateParticipantParam = (participantIndex: number, param: keyof LLMModelParams, value: number | undefined) => {
+  const updateParticipantParam = (participantIndex: number, param: keyof LLMModelParams, value: number | string | boolean | undefined) => {
     setFormData((prev) => ({
       ...prev,
       participants: prev.participants.map((p, i) => {
@@ -231,12 +349,26 @@ export default function CreateTestSetPage() {
           if (value === undefined || value === null) {
             delete newParams[param]
           } else {
-            newParams[param] = value
+            (newParams as Record<string, unknown>)[param] = value
           }
           return { ...p, model_params: Object.keys(newParams).length > 0 ? newParams : undefined }
         }
         return p
       }),
+    }))
+  }
+
+  const modelSupportsReasoning = (modelName: string): boolean => {
+    const model = availableModels.find((m) => m.id === modelName)
+    return model?.supported_parameters?.includes("reasoning") ?? false
+  }
+
+  const updateParticipantEvolvingConfig = (index: number, config: EvolvingConfig) => {
+    setFormData((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p, i) =>
+        i === index ? { ...p, evolving_config: config } : p
+      ),
     }))
   }
 
@@ -280,7 +412,7 @@ export default function CreateTestSetPage() {
             if (g.pattern_mode === "Custom") {
               updatedGame.custom_pattern = undefined
             }
-            if (g.pattern_mode === "LLM") {
+            if (g.pattern_mode === "LLM" || g.pattern_mode === "LLM_Designer") {
               updatedGame.llm_pattern_model = undefined
               updatedGame.llm_pattern_model_params = undefined
               updatedGame.llm_pattern_prompt = undefined
@@ -293,7 +425,7 @@ export default function CreateTestSetPage() {
             if (g.pattern_mode === "Custom") {
               updatedGame.custom_pattern = undefined
             }
-            if (g.pattern_mode === "LLM") {
+            if (g.pattern_mode === "LLM" || g.pattern_mode === "LLM_Designer") {
               updatedGame.llm_pattern_model = undefined
               updatedGame.llm_pattern_model_params = undefined
               updatedGame.llm_pattern_prompt = undefined
@@ -303,13 +435,13 @@ export default function CreateTestSetPage() {
             // When switching to Custom mode, keep existing custom_pattern if available
             updatedGame.symmetry_type = undefined
             updatedGame.shift_step = undefined
-            if (g.pattern_mode === "LLM") {
+            if (g.pattern_mode === "LLM" || g.pattern_mode === "LLM_Designer") {
               updatedGame.llm_pattern_model = undefined
               updatedGame.llm_pattern_model_params = undefined
               updatedGame.llm_pattern_prompt = undefined
               updatedGame.llm_designed_pattern = undefined
             }
-          } else if (value === "LLM") {
+          } else if (value === "LLM" || value === "LLM_Designer") {
             updatedGame.symmetry_type = undefined
             updatedGame.shift_step = undefined
             updatedGame.custom_pattern = undefined
@@ -334,7 +466,7 @@ export default function CreateTestSetPage() {
     }))
   }
 
-  const updateGameLLMParam = (gameIndex: number, param: keyof LLMModelParams, value: number | undefined) => {
+  const updateGameLLMParam = (gameIndex: number, param: keyof LLMModelParams, value: number | string | boolean | undefined) => {
     setFormData((prev) => ({
       ...prev,
       games: prev.games.map((g, i) => {
@@ -343,7 +475,7 @@ export default function CreateTestSetPage() {
           if (value === undefined || value === null) {
             delete newParams[param]
           } else {
-            newParams[param] = value
+            ;(newParams as any)[param] = value
           }
           return { ...g, llm_pattern_model_params: Object.keys(newParams).length > 0 ? newParams : undefined }
         }
@@ -393,6 +525,118 @@ export default function CreateTestSetPage() {
     }
   }
 
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current)
+    }
+  }, [])
+
+  const pollJoinStatus = useCallback((tk: string, tsId?: string) => {
+    if (pollingRef.current) clearInterval(pollingRef.current)
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/join/${tk}`)
+        if (res.ok) {
+          const data = await res.json()
+          setPlayerSlots(data.participant_slots || [])
+          // Auto-navigate when backend auto-starts (all players joined)
+          if (data.status === 'running' || data.status === 'created') {
+            if (pollingRef.current) clearInterval(pollingRef.current)
+            const navigateId = tsId || testSetId
+            if (navigateId) {
+              router.push(`/test-sets/${navigateId}/execute`)
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to poll join status:", err)
+      }
+    }, 3000)
+  }, [testSetId, router])
+
+  const createHumanTest = async () => {
+    setHumanTestCreating(true)
+    setError(null)
+
+    try {
+      const apiFormData = {
+        ...formData,
+        enable_human_test: true,
+        games: formData.games.map((game) => ({
+          ...game,
+          custom_pattern: game.custom_pattern
+            ? game.custom_pattern.map((row) => row.map((cell) => cell as string))
+            : undefined,
+          llm_designed_pattern: game.llm_designed_pattern
+            ? game.llm_designed_pattern.map((row) => row.map((cell) => cell as string))
+            : undefined,
+        })),
+      }
+
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(apiFormData),
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        const token = result.join_token
+        const id = result.test_set_id || result.id
+        setTestSetId(id)
+        setJoinToken(token)
+        setJoinUrl(`${window.location.origin}/join/${token}`)
+        setHumanTestCreated(true)
+        pollJoinStatus(token, id)
+      } else {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || "Failed to create test set")
+      }
+    } catch (err) {
+      console.error("Error creating human test:", err)
+      setError(err instanceof Error ? err.message : "Failed to create human test")
+    } finally {
+      setHumanTestCreating(false)
+    }
+  }
+
+  const startHumanTest = async () => {
+    if (!testSetId) return
+    setHumanTestStarting(true)
+    setError(null)
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/test-sets/${testSetId}/start`, {
+        method: "POST",
+      })
+
+      if (response.ok) {
+        if (pollingRef.current) clearInterval(pollingRef.current)
+        router.push(`/test-sets/${testSetId}/execute`)
+      } else {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || "Failed to start test")
+      }
+    } catch (err) {
+      console.error("Error starting human test:", err)
+      setError(err instanceof Error ? err.message : "Failed to start human test")
+    } finally {
+      setHumanTestStarting(false)
+    }
+  }
+
+  const handleCopyJoinUrl = async () => {
+    if (!joinUrl) return
+    try {
+      await navigator.clipboard.writeText(joinUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (err) {
+      console.error("Failed to copy:", err)
+    }
+  }
+
   const handleCustomPatternSave = (pattern: Grid) => {
     if (editingGameIndex !== null) {
       updateGame(editingGameIndex, "custom_pattern", pattern)
@@ -407,12 +651,28 @@ export default function CreateTestSetPage() {
   }
 
   const calculateTotalGames = () => {
-    return formData.games.reduce((total, game) => {
-      const gameCount = formData.llm_rotate_designer
-        ? formData.participants.length * game.repeat_count
-        : game.repeat_count
-      return total + gameCount
-    }, 0)
+    const totalGameConfigs = formData.games.reduce((sum, game) => sum + game.repeat_count, 0)
+    const participantCount = formData.participants.length
+    if (participantCount === 0 || totalGameConfigs === 0) return 0
+
+    const humanCount = formData.participants.filter(p => p.participant_type === 'Human').length
+    const hasLLMs = formData.participants.some(p => p.participant_type !== 'Human')
+
+    if (formData.llm_rotate_designer) {
+      // Each LLM takes turns as designer
+      const llmCount = formData.participants.filter(p => p.participant_type === 'LLM').length
+      return totalGameConfigs * llmCount
+    }
+
+    if (humanCount === 0) {
+      // All LLM, no rotation: all LLMs play together in each game
+      return totalGameConfigs
+    }
+
+    // Has humans: each human plays separately, LLMs play together in one group
+    const llmGames = hasLLMs ? totalGameConfigs : 0
+    const humanGames = totalGameConfigs * humanCount
+    return llmGames + humanGames
   }
 
   const validateCurrentStep = () => {
@@ -422,8 +682,27 @@ export default function CreateTestSetPage() {
       case "settings":
         return true // Settings step is always valid
       case "participants":
-        const minParticipants = formData.llm_rotate_designer ? 3 : 1
-        return formData.participants.length >= minParticipants && formData.participants.every((p) => p.model_name)
+        const llmParticipants = formData.participants.filter(p => p.participant_type === 'LLM')
+        const minLLMParticipants = formData.llm_rotate_designer ? 3 : 0
+        return (
+          formData.participants.length >= 1 &&
+          llmParticipants.length >= minLLMParticipants &&
+          formData.participants.every((p) =>
+            p.participant_type === 'Human'
+              ? (p.human_name?.trim() || '').length > 0
+              : !!p.model_name
+          ) &&
+          // Check human name uniqueness within form and against DB
+          (() => {
+            const humanParticipants = formData.participants.filter(p => p.participant_type === 'Human')
+            const humanNames = humanParticipants.map(p => (p.human_name?.trim() || '').toLowerCase())
+            // No duplicates within form
+            if (new Set(humanNames).size !== humanNames.length) return false
+            // No conflicts with existing DB names
+            if (humanNames.some(n => existingHumanNames.some(e => e.toLowerCase() === n))) return false
+            return true
+          })()
+        )
       case "games":
         return (
           formData.games.length > 0 &&
@@ -436,9 +715,12 @@ export default function CreateTestSetPage() {
               g.repeat_count >= 1 &&
               (formData.llm_rotate_designer || g.pattern_mode) &&
               (g.pattern_mode !== "Custom" || g.custom_pattern) &&
-              (g.pattern_mode !== "LLM" || g.llm_designed_pattern),
+              (g.pattern_mode !== "LLM" || g.llm_designed_pattern) &&
+              (g.pattern_mode !== "LLM_Designer" || g.llm_pattern_model),
           )
         )
+      case "humanTest":
+        return true // Human test step validation is handled by the step's own UI
       default:
         return false
     }
@@ -554,7 +836,8 @@ export default function CreateTestSetPage() {
                   </p>
                 </div>
                 <Switch
-                  checked={formData.llm_rotate_designer}
+                  checked={isAllHuman ? false : formData.llm_rotate_designer}
+                  disabled={isAllHuman}
                   onCheckedChange={(checked) => setFormData((prev) => ({ ...prev, llm_rotate_designer: checked }))}
                 />
               </div>
@@ -568,7 +851,16 @@ export default function CreateTestSetPage() {
                 </AlertDescription>
               </Alert>
 
-              {formData.llm_rotate_designer && (
+              {isAllHuman && (
+                <Alert>
+                  <Info className="h-4 w-4" />
+                  <AlertDescription>
+                    Designer rotation is automatically disabled for human-only test sets.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {formData.llm_rotate_designer && !isAllHuman && (
                 <Alert>
                   <AlertTriangle className="h-4 w-4" />
                   <AlertDescription>
@@ -590,21 +882,28 @@ export default function CreateTestSetPage() {
 
       case "participants":
         const minParticipants = formData.llm_rotate_designer ? 3 : 1
+        const llmParticipantCount = formData.participants.filter(p => p.participant_type === 'LLM').length
         return (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-lg font-medium">LLM Participants</h3>
+                <h3 className="text-lg font-medium">Participants</h3>
                 <p className="text-sm text-muted-foreground">
                   {formData.llm_rotate_designer
-                    ? `Minimum ${minParticipants} participants required for designer rotation`
-                    : "Add LLM models to participate in the test set"}
+                    ? `Minimum 3 LLM participants required for designer rotation. Human players are scientists only.`
+                    : "Add LLM models or human players to participate in the test set"}
                 </p>
               </div>
-              <Button onClick={addParticipant} size="sm">
-                <Plus className="h-4 w-4 mr-2" />
-                Add Participant
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={() => addParticipant('LLM')} size="sm">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add LLM
+                </Button>
+                <Button onClick={() => addParticipant('Human')} size="sm" variant="outline">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Human
+                </Button>
+              </div>
             </div>
 
             {modelsError && (
@@ -614,11 +913,11 @@ export default function CreateTestSetPage() {
               </Alert>
             )}
 
-            {formData.llm_rotate_designer && formData.participants.length < 3 && (
+            {formData.llm_rotate_designer && llmParticipantCount < 3 && (
               <Alert variant="destructive">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
-                  Designer rotation requires at least 3 participants. Please add more participants.
+                  Designer rotation requires at least 3 LLM participants. Currently have {llmParticipantCount}. Human players cannot be designers.
                 </AlertDescription>
               </Alert>
             )}
@@ -628,8 +927,17 @@ export default function CreateTestSetPage() {
                 <Card key={index}>
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-base">Participant {index + 1}</CardTitle>
-                      {formData.participants.length > minParticipants && (
+                      <div className="flex items-center gap-2">
+                        <CardTitle className="text-base">Participant {index + 1}</CardTitle>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                          participant.participant_type === 'Human'
+                            ? 'bg-blue-100 text-blue-700'
+                            : 'bg-purple-100 text-purple-700'
+                        }`}>
+                          {participant.participant_type === 'Human' ? 'Human' : 'LLM'}
+                        </span>
+                      </div>
+                      {formData.participants.length > 1 && (
                         <Button variant="ghost" size="sm" onClick={() => removeParticipant(index)}>
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -637,6 +945,44 @@ export default function CreateTestSetPage() {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    {participant.participant_type === 'Human' ? (
+                      <div className="space-y-3">
+                          <>
+                            <div className="space-y-2">
+                              <Label>Player Name <span className="text-red-500">*</span></Label>
+                              <Input
+                                placeholder="Enter a unique nickname"
+                                value={participant.human_name || ''}
+                                onChange={(e) => updateParticipant(index, "human_name" as any, e.target.value)}
+                              />
+                              {(() => {
+                                const name = (participant.human_name?.trim() || '').toLowerCase()
+                                if (!name) return null
+                                const duplicateInForm = formData.participants.some(
+                                  (p, i) => i !== index && p.participant_type === 'Human' &&
+                                    (p.human_name?.trim() || '').toLowerCase() === name
+                                )
+                                if (duplicateInForm) {
+                                  return <p className="text-xs text-red-500">This name is already used by another participant in this form.</p>
+                                }
+                                if (existingHumanNames.some(n => n.toLowerCase() === name)) {
+                                  return <p className="text-xs text-red-500">This name already exists in the database. Please choose a different name.</p>
+                                }
+                                return null
+                              })()}
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                              Human player — will interact through the execution page during games.
+                            </p>
+                          </>
+                        {formData.llm_rotate_designer && (
+                          <p className="text-xs text-amber-600">
+                            Note: Human players can only be scientists, not designers.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                    <>
                     <div className="space-y-2">
                       <Label>Model</Label>
                       {modelsLoading ? (
@@ -646,7 +992,7 @@ export default function CreateTestSetPage() {
                         </div>
                       ) : (
                         <Select
-                          value={participant.model_name}
+                          value={participant.model_name || ''}
                           onValueChange={(value) => updateParticipant(index, "model_name", value)}
                         >
                           <SelectTrigger>
@@ -695,7 +1041,7 @@ export default function CreateTestSetPage() {
                             <Input
                               type="number"
                               min="1"
-                              max="4096"
+                              max="65536"
                               value={participant.model_params?.maxCompletionTokens ?? ""}
                               onChange={(e) =>
                                 updateParticipantParam(
@@ -744,8 +1090,145 @@ export default function CreateTestSetPage() {
                             />
                           </div>
                         </div>
+                        {participant.model_name && modelSupportsReasoning(participant.model_name) && (
+                          <div className="space-y-2 pt-2">
+                            <Label>Reasoning Effort</Label>
+                            <Select
+                              value={participant.model_params?.reasoningEffort ?? "__not_set__"}
+                              onValueChange={(value) =>
+                                updateParticipantParam(
+                                  index,
+                                  "reasoningEffort",
+                                  value === "__not_set__" ? undefined : value,
+                                )
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__not_set__">Not set (default)</SelectItem>
+                                <SelectItem value="none">None (disabled)</SelectItem>
+                                <SelectItem value="minimal">Minimal</SelectItem>
+                                <SelectItem value="low">Low</SelectItem>
+                                <SelectItem value="medium">Medium</SelectItem>
+                                <SelectItem value="high">High</SelectItem>
+                                <SelectItem value="xhigh">XHigh (maximum)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between pt-2">
+                          <div className="space-y-0.5">
+                            <Label>Chat History (Multi-turn)</Label>
+                            <p className="text-xs text-muted-foreground">
+                              Off = single-turn (each turn independent). On = accumulate conversation history.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={participant.model_params?.chatHistoryEnabled ?? false}
+                            onCheckedChange={(checked) =>
+                              updateParticipantParam(index, "chatHistoryEnabled", checked || undefined)
+                            }
+                          />
+                        </div>
                       </CollapsibleContent>
                     </Collapsible>
+
+                    <Collapsible>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="sm" className="w-full justify-between">
+                          Evolving Configuration
+                          <ChevronDown className="h-4 w-4" />
+                        </Button>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="space-y-4 pt-4">
+                        <div className="flex items-center justify-between">
+                          <div className="space-y-1">
+                            <Label>Enable Evolving</Label>
+                            <p className="text-xs text-muted-foreground">
+                              Accumulate game experience across rounds to test learning ability
+                            </p>
+                          </div>
+                          <Switch
+                            checked={participant.evolving_config?.enabled || false}
+                            onCheckedChange={(checked) =>
+                              updateParticipantEvolvingConfig(index, {
+                                ...(participant.evolving_config || { mode: 'fresh', accumulate: true }),
+                                enabled: checked,
+                              })
+                            }
+                          />
+                        </div>
+
+                        {participant.evolving_config?.enabled && (
+                          <>
+                            <div className="space-y-2">
+                              <Label>Mode</Label>
+                              <Select
+                                value={participant.evolving_config.mode || 'fresh'}
+                                onValueChange={(value) =>
+                                  updateParticipantEvolvingConfig(index, {
+                                    ...participant.evolving_config!,
+                                    mode: value as 'fresh' | 'imported',
+                                  })
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="fresh">Fresh Start (empty history, accumulates)</SelectItem>
+                                  <SelectItem value="imported">Import from Existing Games</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <p className="text-xs text-muted-foreground">
+                                {participant.evolving_config.mode === 'fresh'
+                                  ? "Starts with no history. After each game, the result is added as context for the next game."
+                                  : "Import history from previous games as initial context."}
+                              </p>
+                            </div>
+
+                            {participant.evolving_config.mode === 'imported' && (
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <div className="space-y-1">
+                                    <Label>Continue Accumulating</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                      {participant.evolving_config.accumulate !== false
+                                        ? "Imported history + new game results will be added progressively"
+                                        : "Only the imported history will be used (fixed, never updated)"}
+                                    </p>
+                                  </div>
+                                  <Switch
+                                    checked={participant.evolving_config.accumulate !== false}
+                                    onCheckedChange={(checked) =>
+                                      updateParticipantEvolvingConfig(index, {
+                                        ...participant.evolving_config!,
+                                        accumulate: checked,
+                                      })
+                                    }
+                                  />
+                                </div>
+
+                                <GameHistorySelector
+                                  modelName={participant.model_name || ''}
+                                  selectedGameIds={participant.evolving_config.import_game_ids || []}
+                                  onSelectionChange={(ids) =>
+                                    updateParticipantEvolvingConfig(index, {
+                                      ...participant.evolving_config!,
+                                      import_game_ids: ids,
+                                    })
+                                  }
+                                />
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </CollapsibleContent>
+                    </Collapsible>
+                    </>
+                    )}
                   </CardContent>
                 </Card>
               ))}
@@ -844,6 +1327,7 @@ export default function CreateTestSetPage() {
                               <SelectItem value="Algorithmic">Algorithmic (Shift)</SelectItem>
                               <SelectItem value="Custom">Custom (Define Manually)</SelectItem>
                               <SelectItem value="LLM">LLM (AI Generated)</SelectItem>
+                              <SelectItem value="LLM_Designer">LLM Designer (Per-Game)</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -919,8 +1403,13 @@ export default function CreateTestSetPage() {
                           </div>
                         )}
 
-                        {game.pattern_mode === "LLM" && (
+                        {(game.pattern_mode === "LLM" || game.pattern_mode === "LLM_Designer") && (
                           <div className="space-y-4 pl-4 border-l-2">
+                            {game.pattern_mode === "LLM_Designer" && (
+                              <p className="text-sm text-muted-foreground">
+                                A fresh pattern will be designed by the selected LLM for each game at runtime.
+                              </p>
+                            )}
                             <div className="space-y-2">
                               <Label>LLM Model</Label>
                               {modelsLoading ? (
@@ -979,7 +1468,7 @@ export default function CreateTestSetPage() {
                                     <Input
                                       type="number"
                                       min="1"
-                                      max="4096"
+                                      max="65536"
                                       value={game.llm_pattern_model_params?.maxCompletionTokens ?? ""}
                                       onChange={(e) =>
                                         updateGameLLMParam(
@@ -1028,6 +1517,34 @@ export default function CreateTestSetPage() {
                                     />
                                   </div>
                                 </div>
+                                {modelSupportsReasoning(game.llm_pattern_model || "") && (
+                                  <div className="space-y-2 col-span-2 pt-2">
+                                    <Label>Reasoning Effort</Label>
+                                    <Select
+                                      value={game.llm_pattern_model_params?.reasoningEffort ?? "__not_set__"}
+                                      onValueChange={(value) =>
+                                        updateGameLLMParam(
+                                          index,
+                                          "reasoningEffort",
+                                          value === "__not_set__" ? undefined : value,
+                                        )
+                                      }
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="__not_set__">Not set (default)</SelectItem>
+                                        <SelectItem value="none">None (disabled)</SelectItem>
+                                        <SelectItem value="minimal">Minimal</SelectItem>
+                                        <SelectItem value="low">Low</SelectItem>
+                                        <SelectItem value="medium">Medium</SelectItem>
+                                        <SelectItem value="high">High</SelectItem>
+                                        <SelectItem value="xhigh">XHigh (maximum)</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                )}
                               </CollapsibleContent>
                             </Collapsible>
 
@@ -1041,47 +1558,51 @@ export default function CreateTestSetPage() {
                               />
                             </div>
 
-                            <Button
-                              onClick={() => handleRequestLLMPattern(index)}
-                              disabled={isLLMDesigning[index] || !game.llm_pattern_model}
-                              className="w-full"
-                            >
-                              {isLLMDesigning[index] ? (
-                                <>
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                  Generating Pattern...
-                                </>
-                              ) : (
-                                "Generate Pattern with LLM"
-                              )}
-                            </Button>
+                            {game.pattern_mode === "LLM" && (
+                              <>
+                                <Button
+                                  onClick={() => handleRequestLLMPattern(index)}
+                                  disabled={isLLMDesigning[index] || !game.llm_pattern_model}
+                                  className="w-full"
+                                >
+                                  {isLLMDesigning[index] ? (
+                                    <>
+                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                      Generating Pattern...
+                                    </>
+                                  ) : (
+                                    "Generate Pattern with LLM"
+                                  )}
+                                </Button>
 
-                            {llmDesignErrors[index] && (
-                              <Alert variant="destructive">
-                                <AlertTriangle className="h-4 w-4" />
-                                <AlertDescription>{llmDesignErrors[index]}</AlertDescription>
-                              </Alert>
-                            )}
+                                {llmDesignErrors[index] && (
+                                  <Alert variant="destructive">
+                                    <AlertTriangle className="h-4 w-4" />
+                                    <AlertDescription>{llmDesignErrors[index]}</AlertDescription>
+                                  </Alert>
+                                )}
 
-                            {game.llm_designed_pattern && !llmDesignErrors[index] && (
-                              <div className="space-y-2">
-                                <Label className="text-sm text-muted-foreground">Generated Pattern Preview:</Label>
-                                <div className="mt-1">
-                                  <GameBoard
-                                    grid={game.llm_designed_pattern}
-                                    gridSize={game.grid_size}
-                                    symbolsInUse={allSymbols.slice(0, game.num_symbols)}
-                                    onCellClick={() => {}}
-                                    selectedCells={[]}
-                                    queriedCells={[]}
-                                    isGuessing={false}
-                                    finalGuess={null}
-                                    masterPattern={game.llm_designed_pattern}
-                                    isGameOver={true}
-                                    readOnly={true}
-                                  />
-                                </div>
-                              </div>
+                                {game.llm_designed_pattern && !llmDesignErrors[index] && (
+                                  <div className="space-y-2">
+                                    <Label className="text-sm text-muted-foreground">Generated Pattern Preview:</Label>
+                                    <div className="mt-1">
+                                      <GameBoard
+                                        grid={game.llm_designed_pattern}
+                                        gridSize={game.grid_size}
+                                        symbolsInUse={allSymbols.slice(0, game.num_symbols)}
+                                        onCellClick={() => {}}
+                                        selectedCells={[]}
+                                        queriedCells={[]}
+                                        isGuessing={false}
+                                        finalGuess={null}
+                                        masterPattern={game.llm_designed_pattern}
+                                        isGameOver={true}
+                                        readOnly={true}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+                              </>
                             )}
                           </div>
                         )}
@@ -1108,20 +1629,188 @@ export default function CreateTestSetPage() {
               <CheckCircle className="h-4 w-4" />
               <AlertDescription>
                 Total games to be executed: <strong>{calculateTotalGames()}</strong>
-                {formData.llm_rotate_designer && (
-                  <span className="block text-sm mt-1">
-                    ({formData.participants.length} participants ×{" "}
-                    {formData.games.reduce((sum, g) => sum + g.repeat_count, 0)} game configs)
-                  </span>
-                )}
+                {(() => {
+                  const humanCount = formData.participants.filter(p => p.participant_type === 'Human').length
+                  const llmCount = formData.participants.filter(p => p.participant_type !== 'Human').length
+                  const totalConfigs = formData.games.reduce((sum, g) => sum + g.repeat_count, 0)
+                  if (formData.llm_rotate_designer) {
+                    return <span className="block text-sm mt-1">({llmCount} LLM designer{llmCount !== 1 ? "s" : ""} × {totalConfigs} game config{totalConfigs !== 1 ? "s" : ""})</span>
+                  }
+                  if (humanCount > 0 && llmCount > 0) {
+                    return <span className="block text-sm mt-1">({llmCount} LLM × {totalConfigs} games + {humanCount} human × {totalConfigs} games)</span>
+                  }
+                  return <span className="block text-sm mt-1">({formData.participants.length} participant{formData.participants.length !== 1 ? "s" : ""} × {totalConfigs} game config{totalConfigs !== 1 ? "s" : ""})</span>
+                })()}
               </AlertDescription>
             </Alert>
+
           </div>
         )
+
+      case "humanTest":
+        return renderHumanTestStep()
 
       default:
         return null
     }
+  }
+
+  const renderHumanTestStep = () => {
+    const totalSlots = formData.participants.length
+    const joinedCount = playerSlots.filter((p: any) => p.claimed).length
+
+    return (
+      <div className="space-y-6">
+        <h3 className="text-lg font-medium">Human Testing Setup</h3>
+
+        {/* Toggle */}
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Users className="h-5 w-5 text-blue-600" />
+                  <Label htmlFor="enable-human-test" className="text-base font-medium">
+                    Enable Remote Human Testing
+                  </Label>
+                </div>
+                <p className="text-sm text-slate-500 ml-7">
+                  Generate a join link so players can play from their own devices.
+                  Players will enter their own names when joining — the names set in Step 3 will be replaced.
+                </p>
+              </div>
+              <Switch
+                id="enable-human-test"
+                checked={enableHumanTest}
+                onCheckedChange={setEnableHumanTest}
+                disabled={humanTestCreated}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {!enableHumanTest ? (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Remote testing is disabled. Click &quot;Create Test Set&quot; below to create the test set normally.
+              You can run it from the Test Sets page.
+            </p>
+            <Button
+              onClick={handleSubmit}
+              disabled={loading}
+              className="w-full"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                "Create Test Set"
+              )}
+            </Button>
+          </div>
+        ) : !humanTestCreated ? (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Generate a join link that human players can use to connect to this test session from their own devices.
+              All {totalSlots} players must join before the test begins automatically.
+            </p>
+            <Button
+              onClick={createHumanTest}
+              disabled={humanTestCreating}
+              className="w-full"
+            >
+              {humanTestCreating ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Generating Join Link...
+                </>
+              ) : (
+                "Generate Join Link"
+              )}
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {/* Token Display */}
+            <div className="text-center space-y-3">
+              <p className="text-sm text-muted-foreground">Join Token</p>
+              <div className="text-4xl font-mono font-bold tracking-widest bg-muted p-4 rounded-lg">
+                {joinToken}
+              </div>
+            </div>
+
+            {/* Join URL */}
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">Join URL</p>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 bg-muted p-3 rounded-lg text-sm font-mono break-all">
+                  <a href={joinUrl || "#"} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                    {joinUrl}
+                    <ExternalLink className="inline h-3 w-3 ml-1" />
+                  </a>
+                </div>
+                <Button variant="outline" size="sm" onClick={handleCopyJoinUrl}>
+                  <Copy className="h-4 w-4 mr-1" />
+                  {copied ? "Copied!" : "Copy Link"}
+                </Button>
+              </div>
+            </div>
+
+            {/* Player Status */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Players</p>
+                <p className="text-sm text-muted-foreground">
+                  Waiting for {totalSlots - joinedCount}/{totalSlots} players to join...
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                {Array.from({ length: totalSlots }).map((_, idx) => {
+                  const slot = playerSlots[idx]
+                  const isJoined = slot?.claimed
+                  return (
+                    <div
+                      key={idx}
+                      className={`flex items-center justify-between p-3 rounded-lg border ${
+                        isJoined ? "bg-green-50 border-green-200" : "bg-muted/50 border-dashed"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2 h-2 rounded-full ${isJoined ? "bg-green-500" : "bg-gray-300"}`} />
+                        <span className="text-sm">
+                          {isJoined ? (slot.player_name || `Player ${idx + 1}`) : `Player ${idx + 1} (waiting...)`}
+                        </span>
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        isJoined ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+                      }`}>
+                        {isJoined ? "Joined" : "Empty"}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {joinedCount < totalSlots ? (
+              <p className="text-sm text-center text-muted-foreground">
+                Waiting for all {totalSlots} players to join. The test will start automatically once everyone has joined.
+              </p>
+            ) : (
+              <div className="text-center space-y-2">
+                <Loader2 className="h-6 w-6 animate-spin mx-auto text-blue-500" />
+                <p className="text-sm text-blue-600 font-medium">
+                  All players joined! Starting test...
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )
   }
 
   const isCustomPatternEditor = currentStep === "customPatternEditor"
@@ -1140,8 +1829,8 @@ export default function CreateTestSetPage() {
         </Button>
         <Separator orientation="vertical" className="h-6" />
         <div>
-          <h1 className="text-2xl font-bold">Create Test Set</h1>
-          <p className="text-muted-foreground">Set up a new competitive evaluation for LLMs</p>
+          <h1 className="text-2xl font-bold">{cloneId ? "Clone Test Set" : "Create Test Set"}</h1>
+          <p className="text-muted-foreground">{cloneId ? "Edit the cloned configuration and create a new test set" : "Set up a new competitive evaluation for LLMs"}</p>
         </div>
       </div>
 
@@ -1212,6 +1901,7 @@ export default function CreateTestSetPage() {
               {currentStep === "settings" && <Settings className="h-5 w-5" />}
               {currentStep === "participants" && <Users className="h-5 w-5" />}
               {currentStep === "games" && <GamepadIcon className="h-5 w-5" />}
+              {currentStep === "humanTest" && <Users className="h-5 w-5" />}
               {displayStepTitle}
             </CardTitle>
             <CardDescription>
@@ -1219,6 +1909,7 @@ export default function CreateTestSetPage() {
               {currentStep === "settings" && "Choose how the test set should be executed"}
               {currentStep === "participants" && "Configure the LLM models that will participate"}
               {currentStep === "games" && "Define the game configurations to test"}
+              {currentStep === "humanTest" && "Share the join link and wait for all players to connect"}
             </CardDescription>
           </CardHeader>
           <CardContent>{renderStepContent()}</CardContent>
@@ -1233,12 +1924,10 @@ export default function CreateTestSetPage() {
           </Button>
 
           <div className="flex items-center gap-2">
-            {currentStep !== "games" ? (
-              <Button onClick={handleNext} disabled={!validateCurrentStep()}>
-                Next
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Button>
-            ) : (
+            {currentStep === "humanTest" ? (
+              // Human test step has its own buttons, no Next/Submit needed
+              null
+            ) : currentStep === "games" && !isAllHuman ? (
               <Button onClick={handleSubmit} disabled={!validateCurrentStep() || loading}>
                 {loading ? (
                   <>
@@ -1249,10 +1938,27 @@ export default function CreateTestSetPage() {
                   "Create Test Set"
                 )}
               </Button>
+            ) : (
+              <Button onClick={handleNext} disabled={!validateCurrentStep()}>
+                Next
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
             )}
           </div>
         </div>
       )}
     </div>
+  )
+}
+
+export default function CreateTestSetPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-600"></div>
+      </div>
+    }>
+      <CreateTestSetPageInner />
+    </Suspense>
   )
 }

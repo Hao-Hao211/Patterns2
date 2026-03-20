@@ -6,24 +6,24 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def init_database():
-    """初始化数据库表"""
+    """Initialize database tables."""
     DATABASE_URL = os.getenv("DATABASE_URL")
     if not DATABASE_URL:
-        print("错误: 未设置DATABASE_URL环境变量")
+        print("Error: DATABASE_URL environment variable not set")
         return
-    
+
     conn = await asyncpg.connect(DATABASE_URL)
-    
+
     try:
-        # 读取并执行schema.sql
+        # Read and execute schema.sql
         with open("../scripts/schema.sql", "r", encoding="utf-8") as f:
             schema_sql = f.read()
-        
+
         await conn.execute(schema_sql)
-        print("数据库表创建成功!")
-        
+        print("Database tables created successfully!")
+
     except Exception as e:
-        print(f"数据库初始化失败: {e}")
+        print(f"Database initialization failed: {e}")
     finally:
         await conn.close()
 

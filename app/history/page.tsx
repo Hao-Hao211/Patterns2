@@ -58,9 +58,11 @@ interface GameDetail {
   designer_llm_model: string | null
   designer_llm_model_params: LLMModelParams | null
   designer_pattern_mode: string | null
+  designer_description: string | null
   master_pattern: Grid
   game_config_dump: any
   players: GamePlayerDetail[]
+  designer_score: number | null
   in_game_designer_score: number | null
   meta_designer_score: number | null
 }
@@ -97,10 +99,12 @@ const getMergedParams = (userParams: LLMModelParams | null, isDesigner = false):
 
   return {
     temperature: userParams.temperature ?? defaults.temperature,
-    maxCompletionTokens: userParams.maxCompletionTokens ?? defaults.maxCompletionTokens, // 改为 maxCompletionTokens
+    maxCompletionTokens: userParams.maxCompletionTokens ?? defaults.maxCompletionTokens,
     topP: userParams.topP ?? defaults.topP,
     frequencyPenalty: userParams.frequencyPenalty ?? defaults.frequencyPenalty,
     presencePenalty: userParams.presencePenalty ?? defaults.presencePenalty,
+    reasoningEffort: userParams.reasoningEffort,
+    chatHistoryEnabled: userParams.chatHistoryEnabled,
   }
 }
 
@@ -334,6 +338,25 @@ export default function HistoryPage() {
               </div>
             </div>
 
+            {mergedParams.reasoningEffort && (
+              <>
+                <Separator />
+                <div className="flex justify-between items-center">
+                  <Label className="text-sm font-medium">Reasoning Effort:</Label>
+                  <Badge variant="outline" className="capitalize">{mergedParams.reasoningEffort}</Badge>
+                </div>
+              </>
+            )}
+
+            <Separator />
+
+            <div className="flex justify-between items-center">
+              <Label className="text-sm font-medium">Chat History:</Label>
+              <Badge variant={mergedParams.chatHistoryEnabled ? "default" : "secondary"}>
+                {mergedParams.chatHistoryEnabled ? "ON (multi-turn)" : "OFF (single-turn)"}
+              </Badge>
+            </div>
+
             <Separator />
 
             <div className="text-xs text-slate-600 space-y-1">
@@ -506,8 +529,7 @@ export default function HistoryPage() {
           <div className="space-y-6">
             {filteredGames.map((game) => {
               const isExpanded = expandedGames.has(game.id)
-              const inGameDesignerScore = game.in_game_designer_score ?? 0
-              const metaDesignerScore = game.meta_designer_score ?? 0
+              const designerScore = game.designer_score ?? game.in_game_designer_score ?? 0
               const symbolsInUse = ALL_SYMBOLS_DETAIL.slice(0, game.num_symbols)
 
               return (
@@ -596,13 +618,20 @@ export default function HistoryPage() {
                                 <div className="text-sm text-slate-600">
                                   Pattern Mode: {game.designer_pattern_mode || "Unknown"}
                                 </div>
+                                {game.game_config_dump?.designer?.llmPrompt && (
+                                  <div className="text-sm text-slate-600 mt-1">
+                                    Designer Prompt: <span className="italic">"{game.game_config_dump.designer.llmPrompt}"</span>
+                                  </div>
+                                )}
+                                {(game.designer_description || game.game_config_dump?.designer?.description) && (
+                                  <div className="text-sm text-slate-600 mt-1">
+                                    Pattern Description: <span className="italic">"{game.designer_description || game.game_config_dump?.designer?.description}"</span>
+                                  </div>
+                                )}
                               </div>
                               <div className="text-right">
-                                <div className="text-2xl font-bold text-blue-600">{inGameDesignerScore.toFixed(1)}</div>
-                                <div className="text-xs text-slate-600 font-medium">In-game Designer Score</div>
-                                <div className="text-xs text-purple-600 mt-1">
-                                  (Meta: {metaDesignerScore.toFixed(1)})
-                                </div>
+                                <div className="text-2xl font-bold text-blue-600">{designerScore.toFixed(1)}</div>
+                                <div className="text-xs text-slate-600 font-medium">Designer Score</div>
                               </div>
                             </div>
                             <div>
@@ -654,6 +683,17 @@ export default function HistoryPage() {
                                           />
                                         )}
                                         {index === 0 && <Badge className="bg-yellow-500 text-white">Winner</Badge>}
+                                        {(() => {
+                                          const configPlayer = game.game_config_dump?.players?.find(
+                                            (p: any) => p.name === player.player_name_in_game
+                                          )
+                                          const evolving = configPlayer?.evolving_config
+                                          return evolving?.enabled ? (
+                                            <Badge variant="outline" className="text-xs">
+                                              Evolving: {evolving.mode}{evolving.accumulate ? " (accumulate)" : ""}
+                                            </Badge>
+                                          ) : null
+                                        })()}
                                       </CardTitle>
                                       <div className="text-right">
                                         <div className="text-xl font-bold text-green-600">{player.final_score}</div>

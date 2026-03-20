@@ -43,21 +43,20 @@ interface LeaderboardEntry {
   games_as_designer: number
   avg_score_as_player: number
   avg_score_as_designer: number
-  avg_in_game_designer_score: number
-  avg_meta_designer_score: number
   win_rate_as_player: number
   win_rate_as_designer: number
-  inter_designer_win_rate: number
-  inter_designer_wins: number
+  wins_as_player: number
+  wins_as_designer: number
   total_games: number
   overall_win_rate: number
   overall_wins: number
-  wins_as_player: number
-  wins_as_designer: number
   cost_per_game: number
   total_cost: number
   total_input_tokens: number
   total_output_tokens: number
+  total_score_as_player: number
+  theoretical_max_scientist_score: number
+  total_score_as_designer: number
 }
 
 interface TestSet {
@@ -84,12 +83,11 @@ export default function LeaderboardPage() {
     | "trueskill"
     | "player_avg"
     | "designer_avg"
-    | "in_game_designer_avg"
-    | "meta_designer_avg"
     | "player_winrate"
     | "designer_winrate"
-    | "inter_designer_winrate"
     | "overall_winrate"
+    | "scientist_total"
+    | "designer_total"
     | "cost_per_game"
   >("elo")
 
@@ -179,18 +177,16 @@ export default function LeaderboardPage() {
           return b.avg_score_as_player - a.avg_score_as_player
         case "designer_avg":
           return b.avg_score_as_designer - a.avg_score_as_designer
-        case "in_game_designer_avg":
-          return (b.avg_in_game_designer_score || 0) - (a.avg_in_game_designer_score || 0)
-        case "meta_designer_avg":
-          return (b.avg_meta_designer_score || 0) - (a.avg_meta_designer_score || 0)
         case "player_winrate":
           return b.win_rate_as_player - a.win_rate_as_player
         case "designer_winrate":
           return b.win_rate_as_designer - a.win_rate_as_designer
-        case "inter_designer_winrate":
-          return (b.inter_designer_win_rate || 0) - (a.inter_designer_win_rate || 0)
         case "overall_winrate":
           return (b.overall_win_rate || 0) - (a.overall_win_rate || 0)
+        case "scientist_total":
+          return (b.total_score_as_player || 0) - (a.total_score_as_player || 0)
+        case "designer_total":
+          return (b.total_score_as_designer || 0) - (a.total_score_as_designer || 0)
         case "cost_per_game":
           return (a.cost_per_game || 0) - (b.cost_per_game || 0)
         default:
@@ -454,12 +450,11 @@ export default function LeaderboardPage() {
                     <SelectItem value="trueskill">TrueSkill Rating</SelectItem>
                     <SelectItem value="player_avg">Avg Player Score</SelectItem>
                     <SelectItem value="designer_avg">Avg Designer Score</SelectItem>
-                    <SelectItem value="in_game_designer_avg">Average In-game Designer Score</SelectItem>
-                    <SelectItem value="meta_designer_avg">Average Meta Designer Score</SelectItem>
                     <SelectItem value="player_winrate">Player Win Rate</SelectItem>
                     <SelectItem value="designer_winrate">Designer Win Rate</SelectItem>
-                    <SelectItem value="inter_designer_winrate">Inter-Designer Win Rate</SelectItem>
                     <SelectItem value="overall_winrate">Overall Win Rate</SelectItem>
+                    <SelectItem value="scientist_total">Scientist Total Score</SelectItem>
+                    <SelectItem value="designer_total">Designer Total Score</SelectItem>
                     <SelectItem value="cost_per_game">Cost per Game</SelectItem>
                   </SelectContent>
                 </Select>
@@ -516,18 +511,6 @@ export default function LeaderboardPage() {
                     </TableHead>
                     <TableHead className="text-center">
                       <div className="flex items-center justify-center gap-1">
-                        <Zap className="h-3 w-3" />
-                        Average In-game Designer Score
-                      </div>
-                    </TableHead>
-                    <TableHead className="text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <Zap className="h-3 w-3" />
-                        Average Meta Designer Score
-                      </div>
-                    </TableHead>
-                    <TableHead className="text-center">
-                      <div className="flex items-center justify-center gap-1">
                         <Target className="h-3 w-3" />
                         Player Win Rate
                       </div>
@@ -540,14 +523,20 @@ export default function LeaderboardPage() {
                     </TableHead>
                     <TableHead className="text-center">
                       <div className="flex items-center justify-center gap-1">
-                        <Zap className="h-3 w-3" />
-                        Inter-Designer Win Rate
+                        <Trophy className="h-3 w-3" />
+                        Overall Win Rate
                       </div>
                     </TableHead>
                     <TableHead className="text-center">
                       <div className="flex items-center justify-center gap-1">
-                        <Trophy className="h-3 w-3" />
-                        Overall Win Rate
+                        <Target className="h-3 w-3" />
+                        Scientist Total
+                      </div>
+                    </TableHead>
+                    <TableHead className="text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <Zap className="h-3 w-3" />
+                        Designer Total
                       </div>
                     </TableHead>
                     <TableHead className="text-center">
@@ -566,8 +555,6 @@ export default function LeaderboardPage() {
                     const overallWins = entry.overall_wins ?? 0
                     const totalGames = entry.total_games ?? 0
                     const costPerGame = entry.cost_per_game ?? 0
-                    const interDesignerWinRate = entry.inter_designer_win_rate ?? 0
-                    const interDesignerWins = entry.inter_designer_wins ?? 0
 
                     return (
                       <TableRow key={`${entry.model_name}-${JSON.stringify(entry.model_params)}`}>
@@ -604,30 +591,6 @@ export default function LeaderboardPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-center">
-                          {entry.games_as_designer > 0 ? (
-                            <>
-                              <div className="font-mono font-semibold text-blue-600">
-                                {(entry.avg_in_game_designer_score || 0).toFixed(1)}
-                              </div>
-                              <div className="text-xs text-slate-500">{entry.games_as_designer} games</div>
-                            </>
-                          ) : (
-                            <div className="text-slate-400 text-sm">-</div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {entry.games_as_designer > 0 ? (
-                            <>
-                              <div className="font-mono font-semibold text-purple-600">
-                                {(entry.avg_meta_designer_score || 0).toFixed(1)}
-                              </div>
-                              <div className="text-xs text-slate-500">{entry.games_as_designer} games</div>
-                            </>
-                          ) : (
-                            <div className="text-slate-400 text-sm">-</div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-center">
                           <Badge variant="secondary" className="font-mono">
                             {entry.win_rate_as_player.toFixed(1)}%
                           </Badge>
@@ -650,13 +613,21 @@ export default function LeaderboardPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-center">
-                          {entry.games_as_designer > 0 ? (
+                          <Badge variant={overallWinRate >= 50 ? "default" : "secondary"} className="font-mono">
+                            {overallWinRate.toFixed(1)}%
+                          </Badge>
+                          <div className="text-xs text-slate-500 mt-1">
+                            {overallWins}/{totalGames} wins
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {entry.games_as_player > 0 ? (
                             <>
-                              <Badge variant="secondary" className="font-mono">
-                                {interDesignerWinRate.toFixed(1)}%
-                              </Badge>
-                              <div className="text-xs text-slate-500 mt-1">
-                                {interDesignerWins}/{entry.games_as_designer} wins
+                              <div className="font-mono font-semibold text-green-600">
+                                {entry.total_score_as_player || 0}
+                              </div>
+                              <div className="text-xs text-slate-500">
+                                / {entry.theoretical_max_scientist_score || 0}
                               </div>
                             </>
                           ) : (
@@ -664,12 +635,13 @@ export default function LeaderboardPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-center">
-                          <Badge variant={overallWinRate >= 50 ? "default" : "secondary"} className="font-mono">
-                            {overallWinRate.toFixed(1)}%
-                          </Badge>
-                          <div className="text-xs text-slate-500 mt-1">
-                            {overallWins}/{totalGames} wins
-                          </div>
+                          {entry.games_as_designer > 0 ? (
+                            <div className="font-mono font-semibold text-orange-600">
+                              {(entry.total_score_as_designer || 0).toFixed(1)}
+                            </div>
+                          ) : (
+                            <div className="text-slate-400 text-sm">-</div>
+                          )}
                         </TableCell>
                         <TableCell className="text-center">
                           <CostDetailsDialog entry={entry} />
@@ -720,21 +692,9 @@ export default function LeaderboardPage() {
             <div>
               <h4 className="font-semibold text-orange-600 mb-2">Designer Performance</h4>
               <p className="text-sm text-slate-600">
-                Statistics when acting as pattern designer. The old designer score (2×(max-min)) is shown for reference.
-                The new scoring system uses two metrics: <strong>In-game Designer Score</strong> - a percentile-based
-                score that can be directly compared with player scores for ranking, and{" "}
-                <strong>Meta Designer Score</strong> - a normalized score (0-100) for cross-game comparison. These
-                scores account for game difficulty, player skill distribution, and design competitiveness. Designer wins
-                when their in-game score is the highest among all participants.
-              </p>
-            </div>
-            <div>
-              <h4 className="font-semibold text-indigo-600 mb-2">Inter-Designer Win Rate</h4>
-              <p className="text-sm text-slate-600">
-                Compares designers against each other within testing rounds. When multiple models act as designers in
-                the same testing round, this metric shows how often a model's designer score is the highest among all
-                designers in that round. This measures relative design quality when models are tested under similar
-                conditions.
+                Statistics when acting as pattern designer. Designer Score = 2 × (best player score − worst player
+                score) − dropout penalty (−5 for the first player who quits, −10 for each additional). Designer wins
+                when their score is the highest among all participants.
               </p>
             </div>
             <div>
