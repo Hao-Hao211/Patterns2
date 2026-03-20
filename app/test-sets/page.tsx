@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { ArrowLeft, Plus, Play, Trophy, Clock, Users, GamepadIcon, RefreshCw, Eye, Trash2 } from "lucide-react"
+import { ArrowLeft, Plus, Play, Trophy, Clock, Users, GamepadIcon, RefreshCw, Eye, Trash2, Copy, Link2, ExternalLink } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,10 +27,12 @@ interface TestSet {
   total_games: number
   completed_games: number
   created_at: string
+  join_token?: string
   config?: {
     participants: Array<{
       model_name: string
       model_params?: any
+      participant_type?: string
     }>
     llm_rotate_designer: boolean
     games: Array<{
@@ -128,6 +130,8 @@ export default function TestSetsPage() {
         return <Badge variant="destructive">failed</Badge>
       case "pending":
         return <Badge variant="secondary">pending</Badge>
+      case "waiting_for_players":
+        return <Badge className="bg-amber-500 hover:bg-amber-600">waiting for players</Badge>
       default:
         return <Badge variant="outline">{status}</Badge>
     }
@@ -261,6 +265,20 @@ export default function TestSetsPage() {
                         </div>
 
                         <div className="flex items-center gap-2 ml-4">
+                          {testSet.status === "waiting_for_players" && testSet.join_token && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                const url = `${window.location.origin}/join/${testSet.join_token}`
+                                navigator.clipboard.writeText(url)
+                              }}
+                            >
+                              <Link2 className="mr-2 h-4 w-4" />
+                              Copy Join Link
+                            </Button>
+                          )}
+
                           {canStart(testSet) && (
                             <Button onClick={() => handleStart(testSet.id)} size="sm">
                               <Play className="mr-2 h-4 w-4" />
@@ -268,11 +286,11 @@ export default function TestSetsPage() {
                             </Button>
                           )}
 
-                          {testSet.status === "running" && (
+                          {(testSet.status === "running" || testSet.status === "waiting_for_players") && (
                             <Button variant="outline" size="sm" asChild>
                               <Link href={`/test-sets/${testSet.id}/execute`}>
                                 <Eye className="mr-2 h-4 w-4" />
-                                View Progress
+                                {testSet.status === "waiting_for_players" ? "View" : "View Progress"}
                               </Link>
                             </Button>
                           )}
@@ -285,6 +303,13 @@ export default function TestSetsPage() {
                               </Link>
                             </Button>
                           )}
+
+                          <Button variant="outline" size="sm" asChild>
+                            <Link href={`/test-sets/create?clone=${testSet.id}`}>
+                              <Copy className="mr-2 h-4 w-4" />
+                              Clone
+                            </Link>
+                          </Button>
 
                           <AlertDialog>
                             <AlertDialogTrigger asChild>

@@ -1,0 +1,11 @@
+ERROR: {error_message}
+
+Your previous response was invalid. Return ONLY valid JSON:
+{{
+  "pattern": [
+    ["", "", ...],
+    ["", "", ...],
+    ...
+  ],
+  "description": "Very brief explanation of the underlying pattern logic and design inspiration."
+}}
