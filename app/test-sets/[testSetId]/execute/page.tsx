@@ -472,8 +472,8 @@ export default function TestSetExecutePage() {
       )
       if (response.ok) {
         setIsGuessMode(false)
-        setGuessGrid([])
         await fetchCurrentGame(); await fetchHumanGameStates()
+        setGuessGrid([])
       }
     } catch (err) {
       console.error("Failed to submit guess:", err)
