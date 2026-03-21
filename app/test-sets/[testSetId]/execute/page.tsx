@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { GameBoard } from "@/components/game-board"
 import { GameLog } from "@/components/game-log"
-import { ArrowLeft, Trophy, Clock, Users, CheckCircle, RefreshCw, Eye, Brain } from "lucide-react"
+import { ArrowLeft, Trophy, Clock, Users, CheckCircle, RefreshCw, Eye, Brain, Eraser, Send } from "lucide-react"
 import type { Grid, Symbol } from "@/types/game-types"
 
 const ALL_SYMBOLS: Symbol[] = ["○", "△", "✖", "□", "★", "+"]
@@ -774,13 +774,13 @@ export default function TestSetExecutePage() {
                 const isHuman = player.type === 'Human'
                 const isHumanTurn = isHuman && player.isWaitingForHuman && !player.isFinished
 
-                // Build display grid for human in guess mode
+                // Build display grid: always overlay guesses on truth grid (like original)
                 let displayGrid = player.grid
-                if (isHuman && isGuessMode && player.id === activeTab) {
+                if (isHuman && guessGrid.length > 0 && player.id === activeTab) {
                   displayGrid = player.grid.map((row, r) =>
                     row.map((cell, c) => {
-                      if (cell !== null && String(cell) !== "?") return cell // Observed
-                      return (guessGrid[r]?.[c] !== "?" ? guessGrid[r]?.[c] : cell) as any
+                      const guessVal = guessGrid[r]?.[c]
+                      return (guessVal && guessVal !== "?" ? guessVal : cell) as any
                     })
                   )
                 }
@@ -851,12 +851,12 @@ export default function TestSetExecutePage() {
                                       variant="outline"
                                       onClick={() => {
                                         setIsGuessMode(true)
-                                        initGuessGrid(gridSize)
+                                        if (guessGrid.length === 0) initGuessGrid(gridSize)
                                         setSelectedCells([])
                                       }}
                                     >
                                       <Brain className="h-4 w-4 mr-2" />
-                                      Enter Guess Mode
+                                      Guess
                                     </Button>
                                     <Button
                                       size="sm"
@@ -872,33 +872,35 @@ export default function TestSetExecutePage() {
                               ) : (
                                 <>
                                   <p className="text-sm text-blue-700 font-medium">
-                                    Click cells to cycle through symbols, then submit your guess.
+                                    Click cells to place your guesses.
                                   </p>
                                   <div className="flex flex-col gap-2">
-                                    <Button
-                                      size="sm"
-                                      onClick={() => handleHumanGuess(player)}
-                                      disabled={submitting}
-                                    >
-                                      <CheckCircle className="h-4 w-4 mr-2" />
-                                      Submit Final Guess
-                                    </Button>
                                     <Button
                                       size="sm"
                                       variant="outline"
                                       onClick={() => {
                                         setIsGuessMode(false)
-                                        setGuessGrid([])
                                       }}
                                     >
+                                      <ArrowLeft className="h-4 w-4 mr-2" />
                                       Back to Observe
                                     </Button>
                                     <Button
                                       size="sm"
-                                      variant="ghost"
+                                      variant="destructive"
                                       onClick={() => initGuessGrid(gridSize)}
                                     >
+                                      <Eraser className="h-4 w-4 mr-2" />
                                       Erase All Guesses
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      className="bg-green-600 hover:bg-green-700"
+                                      onClick={() => handleHumanGuess(player)}
+                                      disabled={submitting}
+                                    >
+                                      <Send className="h-4 w-4 mr-2" />
+                                      Submit Final Guess
                                     </Button>
                                   </div>
                                 </>
