@@ -550,8 +550,10 @@ export default function JoinPage() {
       )
       if (res.ok) {
         setIsGuessMode(false)
-        setGuessGrid([])
+        // Don't clear guessGrid until game state is updated,
+        // otherwise display briefly flashes all-red
         await fetchGameState()
+        setGuessGrid([])
       }
     } catch (err) {
       console.error("Guess failed:", err)
