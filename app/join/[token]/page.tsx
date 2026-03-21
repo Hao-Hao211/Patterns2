@@ -21,6 +21,9 @@ import {
   LogIn,
   Loader2,
   AlertCircle,
+  ArrowLeft,
+  Eraser,
+  Send,
 } from "lucide-react"
 import type { Grid, Symbol, Position } from "@/types/game-types"
 
@@ -483,6 +486,16 @@ export default function JoinPage() {
         }
       )
       if (res.ok) {
+        // Clear guesses for observed cells (like original game)
+        if (guessGrid.length > 0) {
+          setGuessGrid(prev => {
+            const newGrid = prev.map(r => [...r])
+            selectedCells.forEach(({ row, col }) => {
+              if (newGrid[row]?.[col]) newGrid[row][col] = "?"
+            })
+            return newGrid
+          })
+        }
         setSelectedCells([])
         await fetchGameState()
       }
@@ -491,7 +504,7 @@ export default function JoinPage() {
     } finally {
       setSubmitting(false)
     }
-  }, [selectedCells, submitting, session, gameState, myPlayer, fetchGameState])
+  }, [selectedCells, submitting, session, gameState, myPlayer, fetchGameState, guessGrid])
 
   const handleGuess = useCallback(async () => {
     if (submitting || !session || !gameState || !myPlayer) return
@@ -610,13 +623,13 @@ export default function JoinPage() {
     }
   }, [session, gameState, myPlayer, readySubmitted])
 
-  // --- Build display grid for guess mode ---
+  // --- Build display grid: always overlay guesses on truth grid (like original) ---
   const displayGrid: Grid | null = (() => {
     if (!myPlayer) return null
-    if (isGuessMode && myPlayer.isWaitingForHuman && !myPlayer.isFinished) {
+    // Always show guesses overlaid, even when not in guess mode
+    if (guessGrid.length > 0) {
       return myPlayer.grid.map((row, r) =>
         row.map((cell, c) => {
-          if (cell !== null && String(cell) !== "?") return cell
           const guessVal = guessGrid[r]?.[c]
           return guessVal && guessVal !== "?" ? (guessVal as any) : cell
         })
@@ -1210,12 +1223,12 @@ export default function JoinPage() {
                           variant="outline"
                           onClick={() => {
                             setIsGuessMode(true)
-                            initGuessGrid(gridSize)
+                            if (guessGrid.length === 0) initGuessGrid(gridSize)
                             setSelectedCells([])
                           }}
                         >
                           <Brain className="h-4 w-4 mr-2" />
-                          Enter Guess Mode
+                          Guess
                         </Button>
                         <Button
                           size="sm"
@@ -1231,34 +1244,35 @@ export default function JoinPage() {
                   ) : (
                     <>
                       <p className="text-sm text-blue-700 font-medium">
-                        Click cells to cycle through symbols, then submit
-                        your guess.
+                        Click cells to place your guesses.
                       </p>
                       <div className="flex flex-col gap-2">
-                        <Button
-                          size="sm"
-                          onClick={handleGuess}
-                          disabled={submitting}
-                        >
-                          <CheckCircle className="h-4 w-4 mr-2" />
-                          Submit Final Guess
-                        </Button>
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => {
                             setIsGuessMode(false)
-                            setGuessGrid([])
                           }}
                         >
+                          <ArrowLeft className="h-4 w-4 mr-2" />
                           Back to Observe
                         </Button>
                         <Button
                           size="sm"
-                          variant="ghost"
+                          variant="destructive"
                           onClick={() => initGuessGrid(gridSize)}
                         >
+                          <Eraser className="h-4 w-4 mr-2" />
                           Erase All Guesses
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="bg-green-600 hover:bg-green-700"
+                          onClick={handleGuess}
+                          disabled={submitting}
+                        >
+                          <Send className="h-4 w-4 mr-2" />
+                          Submit Final Guess
                         </Button>
                       </div>
                     </>
