@@ -3159,9 +3159,16 @@ async def get_current_game_state_endpoint(test_set_id: str, player_index: Option
             if human_key in current_game_states:
                 state = current_game_states[human_key]
                 if state.get('currentPhase') == 'playing':
-                    safe_state = {k: v for k, v in state.items() if k != 'masterPattern'}
-                    safe_state['masterPattern'] = None
-                    return safe_state
+                    # Check if THIS player has finished — if so, reveal masterPattern
+                    player_finished = False
+                    for ps in (state.get('playerStates') or {}).values():
+                        if ps.get('type') == 'Human' and ps.get('isFinished'):
+                            player_finished = True
+                            break
+                    if not player_finished:
+                        safe_state = {k: v for k, v in state.items() if k != 'masterPattern'}
+                        safe_state['masterPattern'] = None
+                        return safe_state
                 return state
 
         # Fall back to main test set state (LLM games)
