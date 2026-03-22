@@ -643,6 +643,7 @@ class BackgroundTasksManager:
                                 'llmModelParams': designer.get('model_params'),
                                 'llmPrompt': game_template.get('optional_prompt'),
                                 'evolving_config': designer.get('evolving_config'),
+                                'patternMode': game_template.get('pattern_mode', 'LLM_Designer'),
                             },
                             'players': players_for_this_game,
                         }
@@ -2562,10 +2563,12 @@ async def get_games_list_endpoint(limit: int = 50, offset: int = 0, test_set_id:
                 rows = await conn.fetch(
                     """
                     SELECT DISTINCT ON (game_id) game_id, created_at, grid_size, num_symbols,
-                           CASE WHEN EXISTS(
-                               SELECT 1 FROM game_analytics ga2
-                               WHERE ga2.game_id = ga.game_id AND ga2.participant_role = 'designer'
-                           ) THEN 'LLM' ELSE 'Human' END as designer_type
+                           COALESCE(
+                               (SELECT ga2.participant_type FROM game_analytics ga2
+                                WHERE ga2.game_id = ga.game_id AND ga2.participant_role = 'designer'
+                                LIMIT 1),
+                               'Human'
+                           ) as designer_type
                     FROM game_analytics ga
                     WHERE test_set_id = $1
                     ORDER BY game_id, created_at DESC
@@ -2577,10 +2580,12 @@ async def get_games_list_endpoint(limit: int = 50, offset: int = 0, test_set_id:
                 rows = await conn.fetch(
                     """
                     SELECT DISTINCT ON (game_id) game_id, created_at, grid_size, num_symbols,
-                           CASE WHEN EXISTS(
-                               SELECT 1 FROM game_analytics ga2
-                               WHERE ga2.game_id = ga.game_id AND ga2.participant_role = 'designer'
-                           ) THEN 'LLM' ELSE 'Human' END as designer_type
+                           COALESCE(
+                               (SELECT ga2.participant_type FROM game_analytics ga2
+                                WHERE ga2.game_id = ga.game_id AND ga2.participant_role = 'designer'
+                                LIMIT 1),
+                               'Human'
+                           ) as designer_type
                     FROM game_analytics ga
                     ORDER BY game_id, created_at DESC
                     LIMIT $1 OFFSET $2
@@ -2748,7 +2753,7 @@ async def get_game_details_endpoint(game_id: str):
             designer_type = 'Human'
 
             if designer_row:
-                designer_type = 'LLM'
+                designer_type = designer_row['participant_type'] or 'LLM'
                 designer_llm_model = designer_row['participant_llm_model']
                 in_game_designer_score = float(designer_row['in_game_designer_score'] or 0)
                 meta_designer_score = float(designer_row['meta_designer_score'] or 0)
