@@ -21,7 +21,7 @@ export function WelcomeScreen({ onStartSetup }: WelcomeScreenProps) {
         </CardHeader>
         <CardContent className="space-y-6 text-neutral-300 px-8">
           <p className="text-lg">
-            Challenge your deductive skills and unravel hidden patterns. Play as a scientist, or design the ultimate
+            Challenge your abductive skills and unravel hidden patterns. Play as a scientist, or design the ultimate
             puzzle for others (even AI!) to solve.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
