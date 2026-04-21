@@ -10,7 +10,7 @@ import trueskill
 from datetime import datetime
 import numpy as np
 
-from scoring import calculate_designer_score
+from scoring import calculate_designer_score, calculate_revised_designer_score
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,7 @@ class PlayerStats:
     total_score_as_player: int = 0
     theoretical_max_scientist_score: int = 0  # Sum of grid_size^2 for all games as player
     total_score_as_designer: float = 0.0
+    total_revised_score_as_designer: float = 0.0
     wins_as_player: int = 0
     wins_as_designer: int = 0
     overall_wins: int = 0  # Overall wins (highest score in a game)
@@ -186,6 +187,10 @@ class PlayerStats:
     @property
     def avg_score_as_designer(self) -> float:
         return self.total_score_as_designer / self.games_as_designer if self.games_as_designer > 0 else 0.0
+
+    @property
+    def avg_revised_score_as_designer(self) -> float:
+        return self.total_revised_score_as_designer / self.games_as_designer if self.games_as_designer > 0 else 0.0
 
     @property
     def win_rate_as_player(self) -> float:
@@ -554,16 +559,18 @@ class LeaderboardCalculator:
 
                     if len(player_scores) >= 1:
                         new_designer_score = calculate_designer_score(player_scores, num_dropouts)
+                        new_revised_designer_score = calculate_revised_designer_score(player_scores, num_dropouts)
 
                         player_stats[designer_key].games_as_designer += 1
                         player_stats[designer_key].total_score_as_designer += new_designer_score
+                        player_stats[designer_key].total_revised_score_as_designer += new_revised_designer_score
                         player_stats[designer_key].total_games += 1
 
                         all_participants_scores.append((designer_key, new_designer_score, 'designer'))
                         designer_score = new_designer_score
 
                         logger.debug(
-                            f"Game {game['id']}: designer {designer_key} score {new_designer_score:.2f} (dropouts: {num_dropouts})")
+                            f"Game {game['id']}: designer {designer_key} score {new_designer_score:.2f} revised {new_revised_designer_score:.2f} (dropouts: {num_dropouts})")
 
                 # Process players - enhanced version ensuring correct cost calculation
                 valid_players_for_win_rate = []  # Stores (player_key, final_score) for win rate calculation
@@ -804,12 +811,16 @@ class LeaderboardCalculator:
                 existing['total_score_as_player'] += stats.total_score_as_player
                 existing['theoretical_max_scientist_score'] += stats.theoretical_max_scientist_score
                 existing['total_score_as_designer'] += stats.total_score_as_designer
+                existing['total_revised_score_as_designer'] += stats.total_revised_score_as_designer
 
                 # Recalculate averages and rates
                 existing['avg_score_as_player'] = round(existing['total_score_as_player'] / existing['games_as_player'],
                                                         2) if existing['games_as_player'] else 0.0
                 existing['avg_score_as_designer'] = round(
                     existing['total_score_as_designer'] / existing['games_as_designer'], 2) if existing[
+                    'games_as_designer'] else 0.0
+                existing['avg_revised_score_as_designer'] = round(
+                    existing['total_revised_score_as_designer'] / existing['games_as_designer'], 2) if existing[
                     'games_as_designer'] else 0.0
 
                 existing['win_rate_as_player'] = round((existing['wins_as_player'] / existing['games_as_player'] * 100),
@@ -854,7 +865,9 @@ class LeaderboardCalculator:
                     'total_output_tokens': stats.total_output_tokens,
                     'total_score_as_player': stats.total_score_as_player,
                     'theoretical_max_scientist_score': stats.theoretical_max_scientist_score,
-                    'total_score_as_designer': stats.total_score_as_designer
+                    'total_score_as_designer': stats.total_score_as_designer,
+                    'total_revised_score_as_designer': stats.total_revised_score_as_designer,
+                    'avg_revised_score_as_designer': round(stats.avg_revised_score_as_designer, 2)
                 }
                 unique_entries[unique_key] = entry
 
@@ -916,9 +929,11 @@ class LeaderboardCalculator:
                                                           total_input_tokens, total_output_tokens,
                                                           total_score_as_player, theoretical_max_scientist_score,
                                                           total_score_as_designer,
+                                                          avg_revised_score_as_designer,
+                                                          total_revised_score_as_designer,
                                                           created_at)
                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                                        $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+                                        $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
                                 """,
                                 leaderboard_id, test_set_id, rank, entry['model_name'], model_params_json,
                                 entry['elo_rating'], entry['trueskill_rating'], entry['trueskill_mu'],
@@ -933,6 +948,8 @@ class LeaderboardCalculator:
                                 entry.get('total_score_as_player', 0),
                                 entry.get('theoretical_max_scientist_score', 0),
                                 entry.get('total_score_as_designer', 0),
+                                entry.get('avg_revised_score_as_designer', 0.0),
+                                entry.get('total_revised_score_as_designer', 0.0),
                                 datetime.now()
                             )
                             inserted_count += 1
@@ -1018,7 +1035,9 @@ class LeaderboardCalculator:
                             'total_output_tokens': row['total_output_tokens'],
                             'total_score_as_player': row.get('total_score_as_player', 0) or 0,
                             'theoretical_max_scientist_score': row.get('theoretical_max_scientist_score', 0) or 0,
-                            'total_score_as_designer': row.get('total_score_as_designer', 0) or 0
+                            'total_score_as_designer': row.get('total_score_as_designer', 0) or 0,
+                            'avg_revised_score_as_designer': float(row.get('avg_revised_score_as_designer', 0) or 0),
+                            'total_revised_score_as_designer': float(row.get('total_revised_score_as_designer', 0) or 0)
                         }
 
                         logger.info(
@@ -1119,6 +1138,8 @@ async def create_leaderboard_tables(db_pool):
                                    total_score_as_player      INTEGER        NOT NULL DEFAULT 0,
                                    theoretical_max_scientist_score INTEGER    NOT NULL DEFAULT 0,
                                    total_score_as_designer    DECIMAL(10, 2) NOT NULL DEFAULT 0.0,
+                                   avg_revised_score_as_designer   DECIMAL(10, 2) NOT NULL DEFAULT 0.0,
+                                   total_revised_score_as_designer DECIMAL(10, 2) NOT NULL DEFAULT 0.0,
                                    created_at                 TIMESTAMPTZ             DEFAULT NOW(),
                                    FOREIGN KEY (test_set_id) REFERENCES test_sets (id) ON DELETE CASCADE,
                                    UNIQUE (test_set_id, model_name, model_params)

@@ -306,6 +306,8 @@ class LeaderboardEntry(BaseModel):
     total_score_as_player: int = 0
     theoretical_max_scientist_score: int = 0
     total_score_as_designer: float = 0.0
+    avg_revised_score_as_designer: float = 0.0
+    total_revised_score_as_designer: float = 0.0
 
 
 class LeaderboardResponse(BaseModel):

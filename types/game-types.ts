@@ -103,6 +103,8 @@ export interface LeaderboardEntry {
   total_score_as_player: number
   theoretical_max_scientist_score: number
   total_score_as_designer: number
+  avg_revised_score_as_designer: number
+  total_revised_score_as_designer: number
 }
 
 export interface TestSet {

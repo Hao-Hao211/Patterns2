@@ -109,3 +109,35 @@ def calculate_designer_score(player_scores: List[float], num_dropouts: int = 0) 
         score -= penalty
 
     return score
+
+
+def calculate_revised_designer_score(player_scores: List[float], num_dropouts: int = 0) -> float:
+    """Calculate Revised Designer Score.
+
+    Revised Designer Score = mean_Sci + 0.5 * (max_Sci - min_Sci) - Q
+
+    Q (dropout penalty):
+        Q = 0 if num_dropouts == 0
+        Q = 5 + 10 * (num_dropouts - 1) otherwise
+
+    Args:
+        player_scores: List of player (scientist) scores
+        num_dropouts: Number of players who quit/gave up
+
+    Returns:
+        Single float revised designer score
+    """
+    if not player_scores:
+        return 0.0
+
+    mean_sci = sum(player_scores) / len(player_scores)
+    max_sci = max(player_scores)
+    min_sci = min(player_scores)
+    score = mean_sci + 0.5 * (max_sci - min_sci)
+
+    # Apply dropout penalty Q
+    if num_dropouts > 0:
+        q = 5 + (num_dropouts - 1) * 10
+        score -= q
+
+    return score

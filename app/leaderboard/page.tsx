@@ -57,6 +57,8 @@ interface LeaderboardEntry {
   total_score_as_player: number
   theoretical_max_scientist_score: number
   total_score_as_designer: number
+  avg_revised_score_as_designer: number
+  total_revised_score_as_designer: number
 }
 
 interface TestSet {
@@ -83,11 +85,13 @@ export default function LeaderboardPage() {
     | "trueskill"
     | "player_avg"
     | "designer_avg"
+    | "revised_designer_avg"
     | "player_winrate"
     | "designer_winrate"
     | "overall_winrate"
     | "scientist_total"
     | "designer_total"
+    | "revised_designer_total"
     | "cost_per_game"
   >("elo")
 
@@ -177,6 +181,8 @@ export default function LeaderboardPage() {
           return b.avg_score_as_player - a.avg_score_as_player
         case "designer_avg":
           return b.avg_score_as_designer - a.avg_score_as_designer
+        case "revised_designer_avg":
+          return (b.avg_revised_score_as_designer || 0) - (a.avg_revised_score_as_designer || 0)
         case "player_winrate":
           return b.win_rate_as_player - a.win_rate_as_player
         case "designer_winrate":
@@ -187,6 +193,8 @@ export default function LeaderboardPage() {
           return (b.total_score_as_player || 0) - (a.total_score_as_player || 0)
         case "designer_total":
           return (b.total_score_as_designer || 0) - (a.total_score_as_designer || 0)
+        case "revised_designer_total":
+          return (b.total_revised_score_as_designer || 0) - (a.total_revised_score_as_designer || 0)
         case "cost_per_game":
           return (a.cost_per_game || 0) - (b.cost_per_game || 0)
         default:
@@ -450,11 +458,13 @@ export default function LeaderboardPage() {
                     <SelectItem value="trueskill">TrueSkill Rating</SelectItem>
                     <SelectItem value="player_avg">Avg Player Score</SelectItem>
                     <SelectItem value="designer_avg">Avg Designer Score</SelectItem>
+                    <SelectItem value="revised_designer_avg">Avg Revised Designer Score</SelectItem>
                     <SelectItem value="player_winrate">Player Win Rate</SelectItem>
                     <SelectItem value="designer_winrate">Designer Win Rate</SelectItem>
                     <SelectItem value="overall_winrate">Overall Win Rate</SelectItem>
                     <SelectItem value="scientist_total">Scientist Total Score</SelectItem>
                     <SelectItem value="designer_total">Designer Total Score</SelectItem>
+                    <SelectItem value="revised_designer_total">Revised Designer Total</SelectItem>
                     <SelectItem value="cost_per_game">Cost per Game</SelectItem>
                   </SelectContent>
                 </Select>
@@ -511,6 +521,12 @@ export default function LeaderboardPage() {
                     </TableHead>
                     <TableHead className="text-center">
                       <div className="flex items-center justify-center gap-1">
+                        <Zap className="h-3 w-3" />
+                        Avg Revised Designer Score
+                      </div>
+                    </TableHead>
+                    <TableHead className="text-center">
+                      <div className="flex items-center justify-center gap-1">
                         <Target className="h-3 w-3" />
                         Player Win Rate
                       </div>
@@ -537,6 +553,12 @@ export default function LeaderboardPage() {
                       <div className="flex items-center justify-center gap-1">
                         <Zap className="h-3 w-3" />
                         Designer Total
+                      </div>
+                    </TableHead>
+                    <TableHead className="text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <Zap className="h-3 w-3" />
+                        Revised Designer Total
                       </div>
                     </TableHead>
                     <TableHead className="text-center">
@@ -584,6 +606,18 @@ export default function LeaderboardPage() {
                           {entry.games_as_designer > 0 ? (
                             <>
                               <div className="font-mono">{entry.avg_score_as_designer.toFixed(1)}</div>
+                              <div className="text-xs text-slate-500">{entry.games_as_designer} games</div>
+                            </>
+                          ) : (
+                            <div className="text-slate-400 text-sm">-</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {entry.games_as_designer > 0 ? (
+                            <>
+                              <div className="font-mono text-pink-600">
+                                {(entry.avg_revised_score_as_designer || 0).toFixed(1)}
+                              </div>
                               <div className="text-xs text-slate-500">{entry.games_as_designer} games</div>
                             </>
                           ) : (
@@ -644,6 +678,15 @@ export default function LeaderboardPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-center">
+                          {entry.games_as_designer > 0 ? (
+                            <div className="font-mono font-semibold text-pink-600">
+                              {(entry.total_revised_score_as_designer || 0).toFixed(1)}
+                            </div>
+                          ) : (
+                            <div className="text-slate-400 text-sm">-</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
                           <CostDetailsDialog entry={entry} />
                         </TableCell>
                         <TableCell className="text-center">
@@ -695,6 +738,14 @@ export default function LeaderboardPage() {
                 Statistics when acting as pattern designer. Designer Score = 2 × (best player score − worst player
                 score) − dropout penalty (−5 for the first player who quits, −10 for each additional). Designer wins
                 when their score is the highest among all participants.
+              </p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-pink-600 mb-2">Revised Designer Score</h4>
+              <p className="text-sm text-slate-600">
+                Alternative designer metric. Revised Designer Score = mean(player scores) + 0.5 × (max player score −
+                min player score) − Q, where Q = 0 if nobody quit, otherwise Q = 5 + 10 × (n_quit − 1). Rewards
+                patterns that are consistently solvable while still producing spread between players.
               </p>
             </div>
             <div>
