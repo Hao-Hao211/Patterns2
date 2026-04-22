@@ -709,7 +709,7 @@ function CreateTestSetPageInner() {
           formData.games.every(
             (g) =>
               g.grid_size >= 3 &&
-              g.grid_size <= 6 &&
+              g.grid_size <= 8 &&
               g.num_symbols >= 2 &&
               g.num_symbols <= 6 &&
               g.repeat_count >= 1 &&
@@ -1272,7 +1272,7 @@ function CreateTestSetPageInner() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {[3, 4, 5, 6].map((size) => (
+                            {[3, 4, 5, 6, 7, 8].map((size) => (
                               <SelectItem key={size} value={size.toString()}>
                                 {size}×{size}
                               </SelectItem>
