@@ -491,12 +491,12 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
           {step === "basic" && (
             <>
               <div className="space-y-2">
-                <Label htmlFor="gridSize">Grid Size (3-8)</Label>
+                <Label htmlFor="gridSize">Grid Size (3-9)</Label>
                 <Input
                   id="gridSize"
                   type="number"
                   min="3"
-                  max="8"
+                  max="9"
                   value={baseSettings.gridSize}
                   onChange={(e) => setBaseSettings((s) => ({ ...s, gridSize: Number.parseInt(e.target.value) }))}
                 />
