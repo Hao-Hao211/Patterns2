@@ -137,3 +137,33 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# ── Python (backend) ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.python-version
+
+# ── macOS / Windows / IDE ────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# ── Jupyter notebook scratch ─────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Local runtime / logs / cache ─────────────────────────────
+backend/logs/
+
+# ── Optional historical prompt backups (not used at runtime) ─
+backend/prompts_v0/

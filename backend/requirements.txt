@@ -3,7 +3,6 @@ uvicorn[standard]
 pydantic
 python-dotenv
 asyncpg
-openai>=1.0.0
-together
-trueskill
+httpx
 numpy
+trueskill

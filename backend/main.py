@@ -10,19 +10,16 @@ from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal, Dict, Any, Union, Set, Tuple
+from typing import List, Optional, Dict, Any, Set, Tuple
 import asyncpg
 from contextlib import asynccontextmanager
 import httpx
 from dotenv import load_dotenv
 import threading
 from collections import defaultdict
-import openai
-import numpy as np
 
 from prompt_manager import prompt_manager
-from llm_client import LLMClient, LLMResponse, openai_models_cache, openai_models_cache_lock
+from llm_client import LLMClient
 from scoring import (
     calculate_score, calculate_ranks, analyze_action_log,
     calculate_designer_score,
@@ -114,44 +111,31 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Get API keys
+# All model traffic is routed through OpenRouter — one HTTP endpoint covers
+# every provider used by the benchmark (OpenAI, Anthropic, Google, Meta, etc.).
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Initialize OpenRouter client
-openrouter_client = None
+openrouter_client: Optional[httpx.AsyncClient] = None
 if OPENROUTER_API_KEY:
     try:
         openrouter_client = httpx.AsyncClient(
             base_url="https://openrouter.ai/api/v1",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             },
-            timeout=60.0
+            timeout=60.0,
         )
         logger.info("OpenRouter client initialized")
     except Exception as e:
         logger.error(f"OpenRouter client init failed: {e}")
         openrouter_client = None
 else:
-    logger.warning("OPENROUTER_API_KEY not set")
+    logger.warning("OPENROUTER_API_KEY not set — all model calls will fail")
 
-# Initialize OpenAI client
-openai_client = None
-if OPENAI_API_KEY:
-    try:
-        from openai import AsyncOpenAI
-        openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        logger.info("OpenAI client initialized")
-    except Exception as e:
-        logger.error(f"OpenAI client init failed: {e}")
-        openai_client = None
-else:
-    logger.warning("OPENAI_API_KEY not set")
-
-# Initialize unified LLM client
-llm_client = LLMClient(openai_client=openai_client, openrouter_client=openrouter_client)
+llm_client: Optional[LLMClient] = (
+    LLMClient(openrouter_client=openrouter_client) if openrouter_client else None
+)
 
 # Global chat history storage - thread safe
 chat_histories_lock = threading.Lock()
@@ -772,7 +756,7 @@ class BackgroundTasksManager:
                 'gridSize': grid_size,
                 'symbolsInUse': symbols_in_use,
                 'currentGrid': player_state['grid'],
-                'llmModel': player.get('llmModel', 'openai_official/chatgpt-4o-latest'),
+                'llmModel': player.get('llmModel', 'openai/gpt-4o-mini'),
                 'llmModelParams': player.get('llmModelParams'),
                 'turnNumber': player_state['turnNumber']
             }
@@ -1106,9 +1090,6 @@ async def lifespan(app: FastAPI):
                     logger.info(f"Adding column {col} to test_sets...")
                     await conn.execute(f"ALTER TABLE test_sets ADD COLUMN {col} {col_def}")
 
-        # Initialize OpenAI model cache
-        await initialize_openai_models_cache()
-
         # Initialize background tasks manager
         background_tasks_manager = BackgroundTasksManager(db_pool)
 
@@ -1130,74 +1111,6 @@ async def lifespan(app: FastAPI):
     if openrouter_client:
         await openrouter_client.aclose()
         logger.info("OpenRouter client closed")
-
-
-async def initialize_openai_models_cache():
-    """Initialize OpenAI official model cache."""
-    global openai_models_cache
-
-    if not openai_client:
-        logger.info("OpenAI client not configured, using default model list")
-        with openai_models_cache_lock:
-            openai_models_cache.update([
-                'chatgpt-4o-latest',
-                'gpt-4o',
-                'gpt-4o-mini',
-                'gpt-4-turbo',
-                'gpt-3.5-turbo',
-                'o1-preview',
-                'o1-mini',
-                'gpt-4',
-                'gpt-4-turbo-preview',
-                'gpt-4-0125-preview',
-                'gpt-4-1106-preview',
-                'gpt-3.5-turbo-0125',
-                'gpt-3.5-turbo-1106',
-                'o1'
-            ])
-        return
-
-    try:
-        logger.info("Fetching model list from OpenAI official API for cache...")
-        models_response = await openai_client.models.list()
-
-        # Keywords to exclude
-        exclude_keywords = ["embedding", "whisper", "tts", "dall-e"]
-
-        openai_model_ids = set()
-        for model in models_response.data:
-            model_id = model.id.lower()
-            # Skip models with excluded keywords
-            if any(keyword in model_id for keyword in exclude_keywords):
-                continue
-            openai_model_ids.add(model.id)  # Keep original case, no prefix
-
-        with openai_models_cache_lock:
-            openai_models_cache.clear()
-            openai_models_cache.update(openai_model_ids)
-
-        logger.info(f"Cached {len(openai_model_ids)} OpenAI official models")
-
-    except Exception as e:
-        logger.error(f"Failed to fetch OpenAI models, using defaults: {e}")
-        # If API call fails, use default model list
-        with openai_models_cache_lock:
-            openai_models_cache.update([
-                'chatgpt-4o-latest',
-                'gpt-4o',
-                'gpt-4o-mini',
-                'gpt-4-turbo',
-                'gpt-3.5-turbo',
-                'o1-preview',
-                'o1-mini',
-                'gpt-4',
-                'gpt-4-turbo-preview',
-                'gpt-4-0125-preview',
-                'gpt-4-1106-preview',
-                'gpt-3.5-turbo-0125',
-                'gpt-3.5-turbo-1106',
-                'o1'
-            ])
 
 
 async def create_tables_if_not_exist():
@@ -1693,10 +1606,6 @@ def clear_player_token_usage(game_id: str, player_id: str):
 
 
 # --- LLM Player Core Functions ---
-
-# Note: is_openai_model(), build_openai_params(), build_openrouter_params()
-# have been consolidated into llm_client.py (LLMClient class)
-
 
 def build_llm_player_prompt(
         grid_size: int,
@@ -2443,68 +2352,32 @@ async def get_available_models_logic() -> ModelsListResponse:
         except Exception as e:
             logger.error(f"Failed to fetch OpenRouter models: {str(e)}")
 
-    # Add OpenAI official models with openai_official/ prefix
-    with openai_models_cache_lock:
-        cached_openai_models = openai_models_cache.copy()
+    # Sort: keep the canonical default first, then alphabetical by ID.
+    priority_models = ["openai/gpt-4o-mini"]
 
-    # Track added model IDs to avoid duplicates
-    existing_model_ids = {model.id for model in all_models}
-
-    for model_id in cached_openai_models:
-        # Add openai_official/ prefix for OpenAI models
-        prefixed_id = f"openai_official/{model_id}"
-
-        # Check for duplicates
-        if prefixed_id not in existing_model_ids:
-            all_models.append(OpenRouterModel(
-                id=prefixed_id,
-                name=f"OpenAI Official: {model_id}",
-                created=0,
-                description=f"OpenAI official {model_id} model",
-                context_length=None
-            ))
-            existing_model_ids.add(prefixed_id)
-
-    logger.info(f"Added {len(cached_openai_models)} OpenAI official models from cache")
-
-    # Sort models, prioritize common ones
-    priority_models = [
-        'openai_official/chatgpt-4o-latest',
-    ]
-
-    def sort_key(model):
+    def sort_key(model: OpenRouterModel):
         if model.id in priority_models:
             return (0, priority_models.index(model.id))
         return (1, model.id)
 
     all_models.sort(key=sort_key)
 
-    logger.info(f"Total {len(all_models)} models available")
+    logger.info(f"Total {len(all_models)} OpenRouter models available")
 
-    # Return default models if none fetched
+    # Return a small static fallback if OpenRouter is unreachable.
     if not all_models:
         logger.info("Returning default model list")
         default_models = [
-            OpenRouterModel(id="openai_official/chatgpt-4o-latest", name="OpenAI Official: ChatGPT-4o Latest",
-                            created=0),
-            OpenRouterModel(id="openai_official/gpt-4o-mini", name="OpenAI Official: GPT-4o Mini", created=0),
-            OpenRouterModel(id="openai_official/gpt-4o", name="OpenAI Official: GPT-4o", created=0),
-            OpenRouterModel(id="openai/gpt-4o-mini", name="GPT-4o Mini (via OpenRouter)", created=0),
+            OpenRouterModel(id="openai/gpt-4o-mini", name="GPT-4o Mini", created=0),
+            OpenRouterModel(id="openai/gpt-4o", name="GPT-4o", created=0),
+            OpenRouterModel(id="anthropic/claude-sonnet-4", name="Claude Sonnet 4", created=0),
             OpenRouterModel(id="deepseek/deepseek-chat", name="DeepSeek Chat", created=0),
-            OpenRouterModel(id="anthropic/claude-3-5-sonnet", name="Claude 3.5 Sonnet", created=0),
-            OpenRouterModel(id="meta-llama/llama-3.1-8b-instruct", name="Llama 3.1 8B Instruct", created=0),
-            OpenRouterModel(id="qwen/qwen-2.5-7b-instruct", name="Qwen 2.5 7B Instruct", created=0),
+            OpenRouterModel(id="meta-llama/llama-4-scout", name="Llama 4 Scout", created=0),
+            OpenRouterModel(id="x-ai/grok-4", name="Grok 4", created=0),
         ]
-        return ModelsListResponse(
-            object="list",
-            data=default_models
-        )
+        return ModelsListResponse(object="list", data=default_models)
 
-    # Return merged model list
-    return ModelsListResponse(
-        object="list",
-        data=all_models
-    )
+    return ModelsListResponse(object="list", data=all_models)
 
 
 # --- API Endpoints ---
@@ -3640,16 +3513,12 @@ async def health_check():
     """Health check."""
     db_status = "connected" if db_pool else "disconnected"
     openrouter_status = "configured" if openrouter_client else "not configured"
-    openai_status = "configured" if openai_client else "not configured"
-
     return {
         "status": "healthy",
         "openrouter_configured": bool(openrouter_client),
-        "openai_configured": bool(openai_client),
         "database_connected": bool(db_pool),
         "database_status": db_status,
         "openrouter_status": openrouter_status,
-        "openai_status": openai_status
     }
 
 

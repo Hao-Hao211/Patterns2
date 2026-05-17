@@ -1,65 +1,20 @@
-import math
 import json
 import logging
+import math
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass
 from collections import defaultdict
-import asyncpg
-import trueskill
+from dataclasses import dataclass
 from datetime import datetime
-import numpy as np
+from typing import Any, Dict, List, Optional, Tuple
+
+import trueskill
 
 from scoring import calculate_designer_score, calculate_revised_designer_score
 
 logger = logging.getLogger(__name__)
 
-# Pricing tables for different models (per 1M tokens)
-OPENAI_PRICING = {
-    # Standard models
-    'gpt-5': {'input': 1.25, 'output': 10.00},
-    'gpt-5-mini': {'input': 0.25, 'output': 2.00},
-    'gpt-5-nano': {'input': 0.05, 'output': 0.40},
-    'gpt-5-chat-latest': {'input': 1.25, 'output': 10.00},
-    'gpt-4.1': {'input': 2.00, 'output': 8.00},
-    'gpt-4.1-mini': {'input': 0.40, 'output': 1.60},
-    'gpt-4.1-nano': {'input': 0.10, 'output': 0.40},
-    'gpt-4o': {'input': 2.50, 'output': 10.00},
-    'gpt-4o-2024-05-13': {'input': 5.00, 'output': 15.00},
-    'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
-    'gpt-realtime': {'input': 4.00, 'output': 16.00},
-    'gpt-4o-realtime-preview': {'input': 5.00, 'output': 20.00},
-    'gpt-4o-mini-realtime-preview': {'input': 0.60, 'output': 2.40},
-    'gpt-audio': {'input': 2.50, 'output': 10.00},
-    'gpt-4o-audio-preview': {'input': 2.50, 'output': 10.00},
-    'gpt-4o-mini-audio-preview': {'input': 0.15, 'output': 0.60},
-    'o1': {'input': 15.00, 'output': 60.00},
-    'o1-pro': {'input': 150.00, 'output': 600.00},
-    'o3-pro': {'input': 20.00, 'output': 80.00},
-    'o3': {'input': 2.00, 'output': 8.00},
-    'o3-deep-research': {'input': 10.00, 'output': 40.00},
-    'o4-mini': {'input': 1.10, 'output': 4.40},
-    'o4-mini-deep-research': {'input': 2.00, 'output': 8.00},
-    'o3-mini': {'input': 1.10, 'output': 4.40},
-    'o1-mini': {'input': 1.10, 'output': 4.40},
-    'codex-mini-latest': {'input': 1.50, 'output': 6.00},
-    'gpt-4o-mini-search-preview': {'input': 0.15, 'output': 0.60},
-    'gpt-4o-search-preview': {'input': 2.50, 'output': 10.00},
-    'computer-use-preview': {'input': 3.00, 'output': 12.00},
-    'gpt-image-1': {'input': 5.00, 'output': 0.00},
-    # Common aliases
-    'chatgpt-4o-latest': {'input': 2.50, 'output': 10.00},
-    'gpt-4-turbo': {'input': 10.00, 'output': 30.00},
-    'gpt-3.5-turbo': {'input': 0.50, 'output': 1.50},
-    'gpt-4': {'input': 30.00, 'output': 60.00},
-    'gpt-4-turbo-preview': {'input': 10.00, 'output': 30.00},
-    'gpt-4-0125-preview': {'input': 10.00, 'output': 30.00},
-    'gpt-4-1106-preview': {'input': 10.00, 'output': 30.00},
-    'gpt-3.5-turbo-0125': {'input': 0.50, 'output': 1.50},
-    'gpt-3.5-turbo-1106': {'input': 1.00, 'output': 2.00},
-    'o1-preview': {'input': 15.00, 'output': 60.00},
-}
-
+# Static OpenRouter price reference (USD per 1M tokens, as of 2026-Q1).
+# Used as a fallback when OpenRouter does not supply pricing in /models.
 OPENROUTER_PRICING = {
     # OpenAI models via OpenRouter
     'openai/gpt-5-nano': {'input': 0.05, 'output': 0.40},
@@ -108,29 +63,18 @@ OPENROUTER_PRICING = {
 
 
 def get_model_pricing(model_name: str) -> Optional[Dict[str, float]]:
-    """Get pricing for a model with enhanced logging"""
-    logger.debug(f"Looking up pricing for model {model_name}")
-
-    # Remove openai_official/ prefix for OpenAI models
-    clean_model_name = model_name.replace("openai_official/", "")
-
-    # Check OpenAI pricing first
-    if clean_model_name in OPENAI_PRICING:
-        pricing = OPENAI_PRICING[clean_model_name]
-        logger.debug(
-            f"Found OpenAI model {clean_model_name} pricing: input ${pricing['input']}/1M, output ${pricing['output']}/1M")
-        return pricing
-
-    # Check OpenRouter pricing
+    """Look up per-1M-token pricing for an OpenRouter model identifier."""
     if model_name in OPENROUTER_PRICING:
         pricing = OPENROUTER_PRICING[model_name]
         logger.debug(
-            f"Found OpenRouter model {model_name} pricing: input ${pricing['input']}/1M, output ${pricing['output']}/1M")
+            "Pricing for %s: input $%s/1M, output $%s/1M",
+            model_name, pricing["input"], pricing["output"],
+        )
         return pricing
 
-    # Default pricing for unknown models (rough estimate)
-    logger.warning(f"No pricing found for model {model_name}, using defaults")
-    return {'input': 1.00, 'output': 3.00}
+    # Fallback: rough average for unknown models.
+    logger.warning("No pricing found for %s — using defaults", model_name)
+    return {"input": 1.00, "output": 3.00}
 
 
 def calculate_cost(input_tokens: int, output_tokens: int, model_name: str) -> float:

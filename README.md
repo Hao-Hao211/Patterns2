@@ -66,7 +66,7 @@ Two execution paths are central to every run:
 | --- | --- |
 | Frontend | Next.js 15 · React 19 · TypeScript · Tailwind CSS · Radix UI · lucide-react |
 | Backend | Python 3.11+ · FastAPI · Uvicorn · Pydantic · `httpx` · `asyncpg` |
-| Model access | OpenRouter (with optional direct OpenAI / Together.ai paths) |
+| Model access | OpenRouter (single endpoint for every model provider) |
 | Database | PostgreSQL (Neon in production) |
 | Rating systems | `trueskill` library + custom ELO implementation |
 | Hosting | Vercel (frontend) · Render (backend) · Neon (PostgreSQL) |
@@ -95,7 +95,7 @@ Two execution paths are central to every run:
 ├── backend/
 │   ├── main.py                   # FastAPI app + all endpoints + orchestration
 │   ├── models.py                 # Pydantic request/response models
-│   ├── llm_client.py             # OpenRouter / OpenAI / Together.ai wrapper
+│   ├── llm_client.py             # Thin async wrapper around OpenRouter
 │   ├── prompt_manager.py         # Prompt templating engine
 │   ├── prompts/                  # Current prompt templates (.txt)
 │   ├── scoring.py                # Scientist + Designer scoring formulas
@@ -113,7 +113,7 @@ Two execution paths are central to every run:
 - **Node.js 18+** (Node 20 recommended) and **pnpm** (or npm) for the frontend
 - **Python 3.11+** with `pip` for the backend
 - **PostgreSQL 14+** (a managed instance such as Neon works out of the box)
-- An **OpenRouter API key** for model calls (optional: separate OpenAI / Together.ai keys)
+- An **OpenRouter API key** — every model call is routed through OpenRouter, so a single key gives access to OpenAI, Anthropic, Google, Meta, xAI, DeepSeek, and others
 
 ---
 
@@ -134,16 +134,14 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 # PostgreSQL connection string (Neon, RDS, or local instance)
 DATABASE_URL=postgres://user:password@host:5432/dbname
 
-# Primary model provider — OpenRouter is the canonical path
+# OpenRouter API key — all model traffic flows through OpenRouter
 OPENROUTER_API_KEY=sk-or-v1-...
-
-# Optional: direct provider keys (if you want to bypass OpenRouter)
-OPENAI_API_KEY=sk-...
-TOGETHER_API_KEY=...
 
 # Comma-separated CORS allowlist for the frontend origin(s)
 CORS_ORIGINS=http://localhost:3000,https://haozhang.site
 ```
+
+A ready-to-copy template lives at `.env.example` and `backend/.env.example`.
 
 ---
 
