@@ -99,14 +99,14 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
       } catch (error) {
         console.error("Error fetching models:", error)
         setModelsError("Failed to load models. Using defaults.")
-        // 设置默认模型
+        // Fallback OpenRouter model list (used only when the backend is unreachable).
         setAvailableModels([
-          { id: "openai_official/chatgpt-4o-latest", object: "model", created: 0, owned_by: "openai" },
-          { id: "gpt-4o", object: "model", created: 0, owned_by: "openai" },
-          { id: "gpt-4o-mini", object: "model", created: 0, owned_by: "openai" },
-          { id: "gpt-4", object: "model", created: 0, owned_by: "openai" },
-          { id: "gpt-4-turbo", object: "model", created: 0, owned_by: "openai" },
-          { id: "gpt-3.5-turbo", object: "model", created: 0, owned_by: "openai" },
+          { id: "openai/gpt-4o-mini", object: "model", created: 0, owned_by: "openrouter" },
+          { id: "openai/gpt-4o", object: "model", created: 0, owned_by: "openrouter" },
+          { id: "anthropic/claude-sonnet-4", object: "model", created: 0, owned_by: "openrouter" },
+          { id: "deepseek/deepseek-chat", object: "model", created: 0, owned_by: "openrouter" },
+          { id: "meta-llama/llama-4-scout", object: "model", created: 0, owned_by: "openrouter" },
+          { id: "x-ai/grok-4", object: "model", created: 0, owned_by: "openrouter" },
         ])
       } finally {
         setModelsLoading(false)
@@ -126,8 +126,8 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
           newConfig.shiftStep = 1
         }
       } else if (prevConfig.type === "LLM" && !prevConfig.llmModel) {
-        // 设置默认模型为openai_official/chatgpt-4o-latest
-        newConfig.llmModel = "openai_official/chatgpt-4o-latest"
+        // Default LLM Designer model when none is selected.
+        newConfig.llmModel = "openai/gpt-4o-mini"
       }
       return newConfig
     })
@@ -153,13 +153,13 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
           finalDesignerConfig.shiftStep = 1
         }
       } else if (finalDesignerConfig.type === "LLM" && !finalDesignerConfig.llmModel) {
-        finalDesignerConfig.llmModel = "openai_official/chatgpt-4o-latest"
+        finalDesignerConfig.llmModel = "openai/gpt-4o-mini"
       }
 
       // 确保所有LLM玩家都有默认模型
       const finalPlayers = players.map((player) => ({
         ...player,
-        llmModel: player.type === "LLM" && !player.llmModel ? "openai_official/chatgpt-4o-latest" : player.llmModel,
+        llmModel: player.type === "LLM" && !player.llmModel ? "openai/gpt-4o-mini" : player.llmModel,
       }))
 
       onSetupComplete({ baseSettings, designer: finalDesignerConfig, players: finalPlayers })
@@ -198,7 +198,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
             updatedPlayer.llmModel = undefined
             updatedPlayer.llmModelParams = undefined
           } else if (value === "LLM" && !updatedPlayer.llmModel) {
-            updatedPlayer.llmModel = "openai_official/chatgpt-4o-latest"
+            updatedPlayer.llmModel = "openai/gpt-4o-mini"
           }
         }
         return updatedPlayer
@@ -215,7 +215,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
       symmetryType: undefined,
       shiftStep: undefined,
       customPattern: undefined,
-      llmModel: newType === "LLM" ? "openai_official/chatgpt-4o-latest" : undefined,
+      llmModel: newType === "LLM" ? "openai/gpt-4o-mini" : undefined,
       llmModelParams: newType === "LLM" ? prev.llmModelParams : undefined,
       llmPrompt: newType === "LLM" ? prev.llmPrompt : undefined,
       llmDesignedPattern: undefined,
@@ -442,7 +442,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
               <span className="text-sm text-slate-600">Loading models...</span>
             </div>
           ) : (
-            <Select value={value || "openai_official/chatgpt-4o-latest"} onValueChange={onChange}>
+            <Select value={value || "openai/gpt-4o-mini"} onValueChange={onChange}>
               <SelectTrigger>
                 <SelectValue placeholder="Select LLM Model" />
               </SelectTrigger>
@@ -450,7 +450,7 @@ export function GameSetupWizard({ onSetupComplete, allSymbols }: GameSetupWizard
                 {availableModels.map((model) => (
                   <SelectItem key={model.id} value={model.id}>
                     {model.id}
-                    {model.id === "openai_official/chatgpt-4o-latest" && (
+                    {model.id === "openai/gpt-4o-mini" && (
                       <span className="ml-2 text-xs text-green-600">(Recommended)</span>
                     )}
                   </SelectItem>

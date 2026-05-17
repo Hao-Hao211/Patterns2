@@ -57,7 +57,7 @@ class LLMPlayerTurnRequest(BaseModel):
     gridSize: int
     symbolsInUse: List[Symbol]
     currentGrid: List[List[str]]
-    llmModel: Optional[str] = "openai_official/chatgpt-4o-latest"
+    llmModel: Optional[str] = "openai/gpt-4o-mini"
     llmModelParams: Optional[LLMModelParams] = None
     turnNumber: int = 1
 
@@ -107,7 +107,7 @@ class LLMPlayerTurnResponse(BaseModel):
 class DesignPatternRequest(BaseModel):
     gridSize: int = Field(..., ge=3, le=9)
     numSymbols: int = Field(..., ge=2, le=len(ALL_SYMBOLS_PY))
-    llmModel: Optional[str] = "openai_official/chatgpt-4o-latest"
+    llmModel: Optional[str] = "openai/gpt-4o-mini"
     llmModelParams: Optional[LLMModelParams] = None
     prompt: Optional[str] = None
 
