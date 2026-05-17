@@ -408,7 +408,7 @@ If you use this platform or its results, please cite the dissertation:
 
 ```bibtex
 @mastersthesis{zhang2026patterns2,
-  title  = {Patterns II: An Abductive-Reasoning Benchmark for Large Language Models},
+  title  = {Beyond Deduction and Induction: A Benchmark for Evaluating Abductive Reasoning and Active Observation in Large Language Models},
   author = {Zhang, Hao},
   school = {University College London},
   year   = {2026},
