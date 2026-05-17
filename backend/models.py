@@ -105,7 +105,7 @@ class LLMPlayerTurnResponse(BaseModel):
 
 
 class DesignPatternRequest(BaseModel):
-    gridSize: int = Field(..., ge=3, le=6)
+    gridSize: int = Field(..., ge=3, le=9)
     numSymbols: int = Field(..., ge=2, le=len(ALL_SYMBOLS_PY))
     llmModel: Optional[str] = "openai_official/chatgpt-4o-latest"
     llmModelParams: Optional[LLMModelParams] = None
@@ -236,7 +236,7 @@ class ScoreboardResponse(BaseModel):
 
 
 class TestSetGameConfig(BaseModel):
-    grid_size: int = Field(default=6, ge=3, le=6)
+    grid_size: int = Field(default=6, ge=3, le=9)
     num_symbols: int = Field(default=5, ge=2, le=6)
     optional_prompt: Optional[str] = None
     custom_pattern: Optional[List[List[str]]] = None
@@ -306,6 +306,8 @@ class LeaderboardEntry(BaseModel):
     total_score_as_player: int = 0
     theoretical_max_scientist_score: int = 0
     total_score_as_designer: float = 0.0
+    avg_revised_score_as_designer: float = 0.0
+    total_revised_score_as_designer: float = 0.0
 
 
 class LeaderboardResponse(BaseModel):

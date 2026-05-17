@@ -1752,6 +1752,28 @@ def build_error_correction_prompt(
     )
 
 
+def validate_observe_targets_are_unknown(
+        response: LLMPlayerTurnResponse,
+        current_grid: List[List[str]]
+) -> None:
+    """Treat observes of already revealed cells as invalid so retry can correct them."""
+    if response.action != "observe" or not response.cellsToObserve:
+        return
+
+    already_observed_targets = []
+    for cell in response.cellsToObserve:
+        row, col = cell.row, cell.col
+        if current_grid[row][col] != "?":
+            already_observed_targets.append(f"({row},{col})={current_grid[row][col]}")
+
+    if already_observed_targets:
+        raise ValueError(
+            "Observe target was already observed: "
+            + ", ".join(already_observed_targets)
+            + ". Choose only cells marked '?' in the current grid."
+        )
+
+
 def build_design_error_correction_prompt(
         grid_size: int,
         num_symbols: int,
@@ -1830,6 +1852,7 @@ async def llm_player_turn_logic_with_retry(request: LLMPlayerTurnRequest,
                     request.gridSize,
                     request.symbolsInUse
                 )
+                validate_observe_targets_are_unknown(parsed_response, request.currentGrid)
 
                 logger.info(f"LLM player {request.playerName} retry #{retry_count} succeeded")
                 return parsed_response, total_input_tokens, total_output_tokens
@@ -1972,6 +1995,7 @@ async def llm_player_turn_logic(request: LLMPlayerTurnRequest) -> Tuple[LLMPlaye
         request.gridSize,
         request.symbolsInUse
     )
+    validate_observe_targets_are_unknown(parsed_response, request.currentGrid)
 
     return parsed_response, llm_resp.input_tokens, llm_resp.output_tokens
 
