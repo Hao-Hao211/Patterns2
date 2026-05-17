@@ -420,6 +420,6 @@ If you use this platform or its results, please cite the dissertation:
 
 ## Acknowledgements
 
-Patterns II is based on Sid Sackson's *Patterns* (in *A Gamut of Games*, 1969) and the column by Martin Gardner that popularised it (*Scientific American*, 1969). The benchmark adaptation, system implementation, and empirical evaluation were carried out as part of the author's MSc Final-Year Project at University College London.
+Patterns II is based on Sid Sackson's *Patterns* (in *A Gamut of Games*, 1969) and the column by Martin Gardner that popularised it (*Scientific American*, 1969).
 
 Model calls are routed through [OpenRouter](https://openrouter.ai). The TrueSkill rating implementation uses the official [`trueskill`](https://trueskill.org) Python library.
