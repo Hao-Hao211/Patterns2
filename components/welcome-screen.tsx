@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Puzzle, Brain, Zap, History } from "lucide-react"
+import { Puzzle, Brain, Zap, History, Settings, Trophy } from "lucide-react"
 import Link from "next/link"
 
 interface WelcomeScreenProps {
@@ -63,6 +63,28 @@ export function WelcomeScreen({ onStartSetup }: WelcomeScreenProps) {
             <Link href="/history">
               <History className="mr-2 h-4 w-4" />
               View Game History
+            </Link>
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800"
+            asChild
+          >
+            <Link href="/test-sets">
+              <Settings className="mr-2 h-4 w-4" />
+              Setup Batch Test
+            </Link>
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800"
+            asChild
+          >
+            <Link href="/leaderboard">
+              <Trophy className="mr-2 h-4 w-4" />
+              View Leaderboard
             </Link>
           </Button>
         </CardFooter>

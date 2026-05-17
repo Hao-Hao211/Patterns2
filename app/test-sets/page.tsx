@@ -172,8 +172,8 @@ export default function TestSetsPage() {
 
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-4xl font-bold text-slate-800 mb-2">Leaderboard Test Sets</h1>
-              <p className="text-slate-600">Manage and run competitive test sets for LLM evaluation</p>
+              <h1 className="text-4xl font-bold text-slate-800 mb-2">Batch Test Sets</h1>
+              <p className="text-slate-600">Manage and run batch test sets for LLM evaluation</p>
             </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
