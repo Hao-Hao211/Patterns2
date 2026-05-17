@@ -1,6 +1,8 @@
 ERROR: {error_message}
 
 Your previous response was invalid. Notice and fix the error.
+If you choose "observe", every cell in "cellsToObserve" must currently be "?" in the grid below.
+If the error says an observe target was already observed, choose only unobserved "?" cells from the current grid.
 
 Return ONLY valid JSON:
 {{

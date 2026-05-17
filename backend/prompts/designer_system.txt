@@ -13,7 +13,7 @@ After a Scientist submits their final guess, each of the remaining unrevealed ce
 - If a Scientist chooses to quit, their total score is 0
 
 DESIGNER SCORING:
-- Your Designer score = 2 × (highest Scientist score − lowest Scientist score)
+- Your Designer score = 1.20 × (max(mean_top3,0) − max(mean_bot3, 0)) − Penalty
 - Penalty: −5 points if any Scientist quits; −10 points for each additional quitter beyond the first.
 - Your goal is to maximise your Designer score.
 
