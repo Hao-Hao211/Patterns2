@@ -1,15 +1,12 @@
 "use client"
 
 import { useState } from "react"
-import Link from "next/link"
 import { WelcomeScreen } from "@/components/welcome-screen"
 import { GameSetupWizard, type FullGameConfig, type DesignerConfig } from "@/components/game-setup-wizard"
 import { PlayingArea, type PlayerState } from "@/components/playing-area"
 import { DesignerDashboard, type PlayerScoreInfo } from "@/components/designer-dashboard"
 import type { Grid, Symbol } from "@/types/game-types"
 import type { Position } from "@/types/game-types"
-import { Button } from "@/components/ui/button"
-import { History, Trophy, Settings } from "lucide-react"
 
 const ALL_SYMBOLS: Symbol[] = ["○", "△", "✖", "□", "★", "+"]
 
@@ -260,26 +257,6 @@ export default function GamePage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-black">
         <WelcomeScreen onStartSetup={handleStartSetup} />
-        <div className="flex flex-col gap-3 mt-8">
-          <Button variant="link" className="text-neutral-400 hover:text-neutral-200" asChild>
-            <Link href="/history">
-              <History className="mr-2 h-4 w-4" />
-              View Game History
-            </Link>
-          </Button>
-          <Button variant="link" className="text-neutral-400 hover:text-neutral-200" asChild>
-            <Link href="/test-sets">
-              <Settings className="mr-2 h-4 w-4" />
-              Setup Leaderboard Test
-            </Link>
-          </Button>
-          <Button variant="link" className="text-neutral-400 hover:text-neutral-200" asChild>
-            <Link href="/leaderboard">
-              <Trophy className="mr-2 h-4 w-4" />
-              View Leaderboard
-            </Link>
-          </Button>
-        </div>
       </div>
     )
   }
